@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>V121 调参控制台</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { background:#0d0d1a; color:#eee; font-family:-apple-system,"PingFang SC",Arial,sans-serif;
+         padding:12px; max-width:520px; margin:auto; -webkit-tap-highlight-color:transparent; }
+  h2 { text-align:center; color:#f0c040; margin:6px 0 10px }
+  h3 { color:#f0c040; margin:14px 0 6px; font-size:15px;
+       border-bottom:1px solid #333; padding-bottom:4px }
+  .row { display:flex; gap:6px; margin:6px 0; align-items:center }
+  .row > label { flex:1.4; font-size:13px; color:#bbb }
+  .row > input, .row > select { flex:1; padding:8px; background:#15152a;
+       color:#eee; border:1px solid #333; border-radius:6px; font-size:14px }
+  .row > .val { flex:0 0 70px; text-align:right; color:#888; font-size:12px }
+  button { padding:14px 0; border:0; border-radius:8px; color:#fff;
+           font-size:16px; font-weight:bold; touch-action:manipulation; flex:1 }
+  .b { background:#c0392b } .p { background:#2471a3 } .t { background:#1e8449 }
+  .g { background:#34495e } .y { background:#b9770e } .n { background:#6c3483 }
+  .w { background:#145a32 } .l { background:#7b241c }
+  #login { background:#15152a; padding:14px; border-radius:8px }
+  #login p { font-size:13px; color:#aaa; margin:4px 0 }
+  .hide { display:none !important }
+  .pill { display:inline-block; padding:2px 8px; background:#333; border-radius:10px;
+          font-size:12px; margin-left:6px }
+  .card { background:#15152a; border-radius:10px; padding:10px; margin:8px 0 }
+  .stat { display:flex; justify-content:space-between; padding:4px 0;
+          font-size:13px; border-bottom:1px dashed #2a2a40 }
+  .stat:last-child { border-bottom:0 }
+  .stat .k { color:#aaa } .stat .v { color:#00ff88; font-weight:bold }
+  #log { background:#111; border-radius:8px; padding:8px; margin:8px 0;
+         font-size:12px; max-height:140px; overflow-y:auto; white-space:pre-wrap }
+  .tab-btns { display:flex; gap:4px; margin:8px 0 }
+  .tab-btns button { padding:8px 0; font-size:13px; background:#222 }
+  .tab-btns button.active { background:#34495e }
+  .toggle { width:40px; height:22px; background:#333; border-radius:11px;
+            position:relative; cursor:pointer; flex:0 0 40px }
+  .toggle.on { background:#27ae60 }
+  .toggle::after { content:""; position:absolute; top:2px; left:2px;
+            width:18px; height:18px; background:#fff; border-radius:50%;
+            transition:.15s }
+  .toggle.on::after { left:20px }
+  .danger { color:#e74c3c; font-size:11px; margin-top:4px }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h2>V121 调参控制台 登录</h2>
+  <p>API Key 仅保存在 sessionStorage，刷新后需重新输入。请勿在共用设备勾选保存。</p>
+  <div class="row"><input id="apikey" type="password" autocomplete="off" placeholder="输入 API Key"></div>
+  <div class="row"><input id="base" type="text" placeholder="后端地址（留空=同域）"></div>
+  <div class="row"><button class="g" onclick="doLogin()">进入</button></div>
+  <div id="loginerr" style="color:#e74c3c; margin-top:6px"></div>
+</div>
+
+<div id="app" class="hide">
+  <h2>V121 调参 <span class="pill" id="ver">-</span></h2>
+
+  <div class="tab-btns">
+    <button class="active" onclick="showTab('config')">参数</button>
+    <button onclick="showTab('snapshot')">桌台</button>
+    <button onclick="showTab('report')">报表</button>
+    <button onclick="showTab('hands')">最近</button>
+  </div>
+
+  <div class="row">
+    <button class="g" onclick="loadConfig()">读取</button>
+    <button class="y" onclick="saveConfig()">保存到云</button>
+    <button class="n" onclick="window.location.href='/terminal'">手机端</button>
+    <button class="l" onclick="logout()">登出</button>
+  </div>
+
+  <div id="tab-config">
+    <h3>APEX 总开关（默认全部 OFF，开后影响下一手起）</h3>
+    <div class="row"><label>apex_enabled</label><div class="toggle" data-key="apex_enabled" onclick="tog(this)"></div></div>
+    <div class="row"><label>l85a_enabled</label><div class="toggle" data-key="l85a_enabled" onclick="tog(this)"></div></div>
+    <div class="row"><label>qimen_enabled</label><div class="toggle" data-key="qimen_enabled" onclick="tog(this)"></div></div>
+    <div class="row"><label>monolith_enabled</label><div class="toggle" data-key="monolith_enabled" onclick="tog(this)"></div></div>
+    <div class="row"><label>dmr_enabled</label><div class="toggle" data-key="dmr_enabled" onclick="tog(this)"></div></div>
+    <div class="row"><label>kep_enabled</label><div class="toggle" data-key="kep_enabled" onclick="tog(this)"></div></div>
+    <div class="row"><label>mono_block_opposite</label><div class="toggle" data-key="mono_block_opposite" onclick="tog(this)"></div></div>
+
+    <h3>下注阈值</h3>
+    <div class="row"><label>tau_lo (P 触发)</label><input type="number" step="0.01" data-key="tau_lo"></div>
+    <div class="row"><label>tau_hi (B 触发)</label><input type="number" step="0.01" data-key="tau_hi"></div>
+    <div class="row"><label>small_fill_lo</label><input type="number" step="0.01" data-key="small_fill_lo"></div>
+    <div class="row"><label>small_fill_hi</label><input type="number" step="0.01" data-key="small_fill_hi"></div>
+    <div class="row"><label>collect_min</label><input type="number" step="1" data-key="collect_min"></div>
+    <div class="row"><label>cal_shrink</label><input type="number" step="0.01" data-key="cal_shrink"></div>
+
+    <h3>下注金额</h3>
+    <div class="row"><label>base_bet</label><input type="number" step="0.05" data-key="base_bet"></div>
+    <div class="row"><label>small_bet_size</label><input type="number" step="0.05" data-key="small_bet_size"></div>
+    <div class="row"><label>max_bet</label><input type="number" step="0.05" data-key="max_bet"></div>
+
+    <h3>评分门槛</h3>
+    <div class="row"><label>score_full</label><input type="number" step="1" data-key="score_full"></div>
+    <div class="row"><label>score_small</label><input type="number" step="1" data-key="score_small"></div>
+
+    <h3>风险控制</h3>
+    <div class="row"><label>stop_loss (≤0)</label><input type="number" step="0.5" data-key="stop_loss"></div>
+    <div class="row"><label>stop_win</label><input type="number" step="0.5" data-key="stop_win"></div>
+    <div class="row"><label>freeze_threshold</label><input type="number" step="1" data-key="freeze_threshold"></div>
+    <div class="row"><label>freeze_duration</label><input type="number" step="1" data-key="freeze_duration"></div>
+
+    <h3>阶段</h3>
+    <div class="row"><label>phase1_hands</label><input type="number" step="1" data-key="phase1_hands"></div>
+    <div class="row"><label>phase2_hands</label><input type="number" step="1" data-key="phase2_hands"></div>
+    <div class="row"><label>pred_mode</label>
+      <select data-key="pred_mode"><option>LOW_ONLY</option><option>OFF</option></select>
+    </div>
+
+    <h3>APEX 细参</h3>
+    <div class="row"><label>l85a_score_weight</label><input type="number" step="0.05" data-key="l85a_score_weight"></div>
+    <div class="row"><label>qimen_chaos_coeff</label><input type="number" step="0.05" data-key="qimen_chaos_coeff"></div>
+    <div class="row"><label>qimen_mixed_coeff</label><input type="number" step="0.05" data-key="qimen_mixed_coeff"></div>
+    <div class="row"><label>dmr_z_threshold</label><input type="number" step="0.1" data-key="dmr_z_threshold"></div>
+    <div class="row"><label>dmr_conflict_action</label>
+      <select data-key="dmr_conflict_action"><option>BLOCK</option><option>FOLLOW_DMR</option></select>
+    </div>
+    <div class="row"><label>kep_max_multiplier</label><input type="number" step="0.1" data-key="kep_max_multiplier"></div>
+
+    <p class="danger">⚠ 不变量：tau_lo &lt; tau_hi、small_fill_lo &lt; small_fill_hi、score_small ≤ score_full、base_bet ≤ max_bet、phase1 ≤ phase2。提交不满足约束的组合会返回 400。</p>
+  </div>
+
+  <div id="tab-snapshot" class="hide">
+    <div class="row"><button class="g" onclick="loadSnapshot()">刷新</button></div>
+    <div id="snapshot"></div>
+  </div>
+
+  <div id="tab-report" class="hide">
+    <div class="row"><button class="g" onclick="loadReport()">刷新</button></div>
+    <div id="report"></div>
+  </div>
+
+  <div id="tab-hands" class="hide">
+    <div class="row">
+      <select id="handsTable">
+        <option value="">全部</option>
+        <option>T1</option><option>T2</option><option>T3</option>
+        <option>T4</option><option>T5</option>
+      </select>
+      <button class="g" onclick="loadHands()">刷新</button>
+    </div>
+    <div id="hands"></div>
+  </div>
+
+  <div id="log">就绪</div>
+</div>
+
+<script>
+"use strict";
+
+var KEY = null, BASE = "";
+var CFG = {};
+
+function $(id) { return document.getElementById(id); }
+function $$(sel) { return document.querySelectorAll(sel); }
+
+function lg(s) {
+  var t = new Date().toLocaleTimeString();
+  $("log").innerText = "[" + t + "] " + s + "\n" + $("log").innerText;
+}
+
+function headers() {
+  return { "Content-Type": "application/json", "X-API-Key": KEY };
+}
+
+function api(method, path, body) {
+  var opts = { method: method, headers: headers() };
+  if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
+  return fetch(BASE + path, opts).then(function (r) {
+    return r.json().then(function (j) {
+      if (!r.ok) throw new Error(j.detail || r.statusText);
+      return j;
+    });
+  });
+}
+
+function getJSON(path) {
+  return fetch(BASE + path, { headers: { "X-API-Key": KEY } })
+    .then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) throw new Error(j.detail || r.statusText);
+        return j;
+      });
+    });
+}
+
+function doLogin() {
+  var k = $("apikey").value.trim();
+  var b = $("base").value.trim().replace(/\/$/, "");
+  if (!k) { $("loginerr").innerText = "请输入 API Key"; return; }
+  KEY = k; BASE = b;
+  api("GET", "/ai/config").then(function (j) {
+    sessionStorage.setItem("v121_key", KEY);
+    sessionStorage.setItem("v121_base", BASE);
+    $("ver").innerText = j.version || "";
+    $("login").classList.add("hide");
+    $("app").classList.remove("hide");
+    CFG = j.config || {};
+    fillForm(CFG);
+    lg("登录成功");
+  }).catch(function (e) {
+    $("loginerr").innerText = "登录失败：" + e.message;
+  });
+}
+
+function logout() {
+  sessionStorage.removeItem("v121_key");
+  sessionStorage.removeItem("v121_base");
+  KEY = null;
+  location.reload();
+}
+
+function tog(el) {
+  el.classList.toggle("on");
+}
+
+function fillForm(cfg) {
+  $$("[data-key]").forEach(function (el) {
+    var k = el.getAttribute("data-key");
+    if (!(k in cfg)) return;
+    var v = cfg[k];
+    if (el.classList && el.classList.contains("toggle")) {
+      el.classList.toggle("on", v === true);
+    } else if (el.tagName === "SELECT") {
+      el.value = String(v);
+    } else {
+      el.value = (v === null || v === undefined) ? "" : v;
+    }
+  });
+}
+
+function readForm() {
+  var out = {};
+  $$("[data-key]").forEach(function (el) {
+    var k = el.getAttribute("data-key");
+    if (el.classList && el.classList.contains("toggle")) {
+      out[k] = el.classList.contains("on");
+    } else if (el.tagName === "SELECT") {
+      out[k] = el.value;
+    } else {
+      var raw = el.value.trim();
+      if (raw === "") return;
+      var num = parseFloat(raw);
+      out[k] = isNaN(num) ? raw : num;
+    }
+  });
+  return out;
+}
+
+function diffOnly(form, cfg) {
+  var out = {};
+  Object.keys(form).forEach(function (k) {
+    if (form[k] !== cfg[k]) out[k] = form[k];
+  });
+  return out;
+}
+
+function loadConfig() {
+  api("GET", "/ai/config").then(function (j) {
+    CFG = j.config || {};
+    fillForm(CFG);
+    lg("配置已读取（" + Object.keys(CFG).length + " 项）");
+  }).catch(function (e) { lg("读取失败 " + e.message); });
+}
+
+function saveConfig() {
+  var form = readForm();
+  var diff = diffOnly(form, CFG);
+  if (Object.keys(diff).length === 0) { lg("无变更"); return; }
+  if (!confirm("提交以下变更？\n" + JSON.stringify(diff, null, 2))) return;
+  api("POST", "/ai/tune", diff).then(function (j) {
+    CFG = j.config || CFG;
+    fillForm(CFG);
+    lg("已应用 " + Object.keys(j.applied || diff).length + " 项");
+  }).catch(function (e) { lg("保存失败 " + e.message); });
+}
+
+function loadSnapshot() {
+  api("GET", "/ai/snapshot").then(function (j) {
+    var html = "";
+    (j.tables || []).forEach(function (t) {
+      var ld = t.last_decision || {};
+      html += '<div class="card"><div class="stat"><span class="k">' + t.table_id +
+        ' shoe=' + t.shoe_id + '</span><span class="v">' + (ld.decision || "—") +
+        ' ' + (ld.side || "") + '</span></div>' +
+        '<div class="stat"><span class="k">手数 / BP</span><span class="v">' +
+        t.hand_no + ' / ' + t.bp_hand_no + '</span></div>' +
+        '<div class="stat"><span class="k">靴盈亏 / 总盈亏</span><span class="v">' +
+        t.shoe_pnl.toFixed(2) + ' / ' + t.net_pnl.toFixed(2) + '</span></div>' +
+        '<div class="stat"><span class="k">胜 / 负 / 连错 / 连胜</span><span class="v">' +
+        t.wins + ' / ' + t.losses + ' / ' + t.consec_errors + ' / ' + t.consec_wins + '</span></div>' +
+        '<div class="stat"><span class="k">冻结 / 连败 / 最大回撤</span><span class="v">' +
+        t.freeze + ' / ' + t.loss_streak + ' / ' + t.max_dd.toFixed(2) + '</span></div>' +
+        '<div class="stat"><span class="k">分数 / 体制 / mono</span><span class="v">' +
+        (ld.score || 0) + ' / ' + (ld.regime || "—") + ' / ' + (ld.mono_state || "—") + '</span></div>' +
+        '<div class="stat"><span class="k">L85A / DMR</span><span class="v">' +
+        (ld.predictability_label || "—") + ' / ' + (ld.dmr_action || "NONE") + '</span></div>' +
+        '<div class="stat"><span class="k">尾序列</span><span class="v" style="font-family:monospace">' +
+        (t.tail_sequence || "—") + '</span></div></div>';
+    });
+    $("snapshot").innerHTML = html || '<div class="card">无在用桌台</div>';
+    lg("快照已刷新");
+  }).catch(function (e) { lg("快照失败 " + e.message); });
+}
+
+function loadReport() {
+  api("GET", "/ai/report").then(function (j) {
+    var live = j.live || {}, life = j.lifetime || {};
+    var html = '<div class="card"><h3 style="margin-top:0">本会话</h3>' +
+      '<div class="stat"><span class="k">总注</span><span class="v">' + (live.total_bets || 0) + '</span></div>' +
+      '<div class="stat"><span class="k">胜 / 负</span><span class="v">' + (live.wins || 0) + ' / ' + (live.losses || 0) + '</span></div>' +
+      '<div class="stat"><span class="k">净盈亏</span><span class="v">' + (live.net_pnl || 0) + '</span></div>' +
+      '<div class="stat"><span class="k">最大回撤</span><span class="v">' + (live.max_drawdown || 0) + '</span></div></div>' +
+      '<div class="card"><h3 style="margin-top:0">历史（DB）</h3>' +
+      '<div class="stat"><span class="k">总结算</span><span class="v">' + (life.total_settled || 0) + '</span></div>' +
+      '<div class="stat"><span class="k">胜 / 负 / 和</span><span class="v">' +
+      (life.wins || 0) + ' / ' + (life.losses || 0) + ' / ' + (life.ties || 0) + '</span></div>' +
+      '<div class="stat"><span class="k">胜率</span><span class="v">' +
+      ((life.win_rate || 0) * 100).toFixed(2) + '%</span></div>' +
+      '<div class="stat"><span class="k">威尔逊 95%</span><span class="v">[' +
+      (life.wilson_lower || 0) + ', ' + (life.wilson_upper || 0) + ']</span></div>' +
+      '<div class="stat"><span class="k">累计盈亏</span><span class="v">' + (life.pnl || 0) + '</span></div>' +
+      '<div class="stat"><span class="k">总靴 / 平均</span><span class="v">' +
+      (j.total_shoes || 0) + ' / ' + (j.avg_shoe_pnl || 0) + '</span></div></div>';
+    $("report").innerHTML = html;
+    lg("报告已刷新");
+  }).catch(function (e) { lg("报告失败 " + e.message); });
+}
+
+function loadHands() {
+  var t = $("handsTable").value;
+  var path = "/ai/recent_hands?limit=30" + (t ? "&table_id=" + encodeURIComponent(t) : "");
+  api("GET", path).then(function (j) {
+    var html = '<div class="card">';
+    (j.hands || []).slice(0, 30).forEach(function (h) {
+      var ts = new Date(h.ts * 1000).toLocaleTimeString();
+      html += '<div class="stat"><span class="k">' + ts + ' ' + h.table_id +
+        ' #' + h.hand_no + '</span><span class="v">' +
+        (h.outcome || '·') + ' ' + (h.result || '·') + ' ' +
+        (h.decision || 'WAIT') + ' ' + (h.side || '') + ' ' +
+        (h.bet_size || 0) + ' Δ' + (h.pnl_delta || 0) + '</span></div>';
+    });
+    html += '</div>';
+    $("hands").innerHTML = html;
+    lg("最近 " + (j.count || 0) + " 手");
+  }).catch(function (e) { lg("最近失败 " + e.message); });
+}
+
+function showTab(name) {
+  ["config", "snapshot", "report", "hands"].forEach(function (n) {
+    $("tab-" + n).classList.toggle("hide", n !== name);
+  });
+  $$(".tab-btns button").forEach(function (b) { b.classList.remove("active"); });
+  // Highlight the matching tab button
+  var btns = $$(".tab-btns button");
+  var idx = ["config", "snapshot", "report", "hands"].indexOf(name);
+  if (idx >= 0 && btns[idx]) btns[idx].classList.add("active");
+  if (name === "snapshot") loadSnapshot();
+  else if (name === "report") loadReport();
+  else if (name === "hands") loadHands();
+}
+
+(function autoLogin() {
+  var k = sessionStorage.getItem("v121_key");
+  var b = sessionStorage.getItem("v121_base") || "";
+  if (k) {
+    $("apikey").value = k;
+    $("base").value = b;
+    doLogin();
+  }
+})();
+</script>
+</body>
+</html>

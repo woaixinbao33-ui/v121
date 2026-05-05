@@ -36,7 +36,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-VERSION = "V121_CLOUD_2"
+VERSION = "V121_CLOUD_APEX_3"
 
 API_KEY = os.environ.get("V121_API_KEY")
 if not API_KEY:
@@ -47,9 +47,11 @@ if not API_KEY:
 
 DB_PATH = os.environ.get("V121_DB_PATH", "/opt/v121/v121.db")
 TERMINAL_HTML_PATH = os.environ.get("V121_TERMINAL_HTML", "/opt/v121/terminal.html")
+CONSOLE_HTML_PATH = os.environ.get("V121_CONSOLE_HTML", "/opt/v121/console.html")
 BANKER_COMMISSION = float(os.environ.get("V121_BANKER_COMMISSION", "0.05"))
 
-CONFIG = {
+CONFIG: dict = {
+    # ── V121 base parameters ────────────────────────────────────────────────
     "tau_lo": 0.44,
     "tau_hi": 0.56,
     "collect_min": 10,
@@ -70,7 +72,35 @@ CONFIG = {
     "phase1_hands": 20,
     "phase2_hands": 40,
     "cal_shrink": 0.85,
+    # ── APEX modules (all default OFF, opt-in via /ai/tune) ─────────────────
+    # Master switch. When False every APEX module below is bypassed and the
+    # decide() pipeline is byte-identical to V121_CLOUD_2.
+    "apex_enabled": False,
+    # L85A-02 predictability head: refined pred_score with regime base +
+    # entropy/flip/crowd/transition_risk features. Score is reported in the
+    # response and (when non-zero weight) blended into the gating score.
+    "l85a_enabled": False,
+    "l85a_score_weight": 0.30,
+    # XΩ Qimen: regime confidence + transition risk modulate bet size via a
+    # multiplicative governance coefficient (0.5..1.0).
+    "qimen_enabled": False,
+    "qimen_chaos_coeff": 0.6,
+    "qimen_mixed_coeff": 0.8,
+    # Monolith DMR + KEP. DMR scans windows {6,12,24} for the strongest
+    # z-score / density combination. KEP turns that into a unit multiplier.
+    "monolith_enabled": False,
+    "dmr_enabled": False,
+    # Action when DMR target disagrees with V121 side: BLOCK (skip bet) or
+    # FOLLOW_DMR (override side). BLOCK is the safe default.
+    "dmr_conflict_action": "BLOCK",
+    "dmr_z_threshold": 1.6,
+    "kep_enabled": False,
+    # KEP multiplier is clamped to [1.0, kep_max_multiplier]. Default 1.0
+    # disables sizing changes even if kep_enabled is True.
+    "kep_max_multiplier": 1.0,
 }
+
+CONFIG_KEY = "__config__"
 
 # In-memory cache of table state, hydrated from DB on first access.
 TABLES: dict[str, dict] = {}
@@ -262,6 +292,37 @@ def get_table(table_id: str) -> dict:
     return TABLES[table_id]
 
 
+def _load_config_from_db() -> None:
+    """Restore CONFIG overrides from table_state row keyed by CONFIG_KEY.
+
+    Only known CONFIG keys are merged so a stale DB cannot inject arbitrary
+    fields. Called once on startup.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT state FROM table_state WHERE table_id = ?", (CONFIG_KEY,)
+        ).fetchone()
+    if not row:
+        return
+    try:
+        stored = json.loads(row["state"])
+    except Exception:
+        return
+    for k, v in stored.items():
+        if k in CONFIG:
+            CONFIG[k] = v
+
+
+def _persist_config() -> None:
+    payload = json.dumps(CONFIG, ensure_ascii=False)
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO table_state(table_id, state, updated) VALUES(?, ?, ?) "
+            "ON CONFLICT(table_id) DO UPDATE SET state=excluded.state, updated=excluded.updated",
+            (CONFIG_KEY, payload, time.time()),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Strategy primitives (pure functions of state)
 # ---------------------------------------------------------------------------
@@ -341,9 +402,150 @@ def score_calc(p_cal: float, ph: str, bias: float, regime: str,
         sc += 6
     elif mono == "MONO_OPPOSITE":
         sc -= 30
+    # Under LOW_ONLY pred_mode the meaningful signal is a LOW pred_score (high
+    # information edge), so reward it here.
     if pred_score < 0.50:
         sc += (0.50 - pred_score) * 30
     return max(0, min(100, int(sc)))
+
+
+# ---------------------------------------------------------------------------
+# APEX modules — all are pure functions of state. They produce *advice*; the
+# decide() pipeline decides whether to act on it based on CONFIG flags.
+# ---------------------------------------------------------------------------
+
+def _runs(arr: list[str]) -> list[tuple[str, int]]:
+    if not arr:
+        return []
+    out: list[tuple[str, int]] = []
+    cur, cnt = arr[0], 1
+    for x in arr[1:]:
+        if x == cur:
+            cnt += 1
+        else:
+            out.append((cur, cnt))
+            cur, cnt = x, 1
+    out.append((cur, cnt))
+    return out
+
+
+def regime_metrics(seq: list[str], regime: str) -> tuple[float, float]:
+    """Return (confidence, transition_risk) for the given regime label.
+
+    confidence ∈ [0,1] — how strongly the data supports the label.
+    transition_risk ∈ [0,1] — likelihood the regime is about to change.
+    """
+    arr = bp_only(seq)[-18:]
+    if len(arr) < 12:
+        return 0.3, 0.5
+    n = len(arr)
+    b_rate = arr.count("B") / n
+    sw = sum(1 for i in range(n - 1) if arr[i] != arr[i + 1])
+    sw_rate = sw / max(1, n - 1)
+    if regime in ("TREND_B", "TREND_P"):
+        return min(1.0, abs(b_rate - 0.5) * 2.5), 0.15
+    if regime == "OSC":
+        return min(1.0, sw_rate), 0.50
+    if regime == "CHAOS":
+        return max(0.0, 1.0 - abs(b_rate - 0.5) * 2), 0.70
+    return 0.4, 0.35  # MIXED
+
+
+def l85a_predictability(seq: list[str], regime: str,
+                        regime_conf: float, transition_risk: float) -> tuple[float, str]:
+    """L85A-02 predictability head.
+
+    Returns (score ∈ [0,1], label). High score means the next outcome is more
+    predictable. This is the inverse semantic of pred_score (which is "edge
+    information" — small edge → high pred_score). They're complementary.
+    """
+    bp = bp_only(seq)
+    if len(bp) < 8:
+        return 0.5, "中可预测"
+    w8 = bp[-8:]
+    n8 = len(w8)
+    base = {"TREND_B": 1.0, "TREND_P": 1.0, "OSC": 0.72,
+            "MIXED": 0.55, "CHAOS": 0.20}.get(regime, 0.55)
+    runs = _runs(bp)
+    tail_run = runs[-1][1] if runs else 0
+    counts: dict[str, int] = {}
+    for x in w8:
+        counts[x] = counts.get(x, 0) + 1
+    entropy = -sum((v / n8) * math.log2(v / n8) for v in counts.values()) if n8 > 0 else 0.0
+    flip8 = sum(1 for i in range(1, n8) if w8[i] != w8[i - 1]) / max(1, n8 - 1)
+    crowd = min(1.0, tail_run / 6.0)
+    raw = (base
+           + 0.22 * regime_conf
+           + 0.12 * min(tail_run / 4.0, 1.0)
+           - 0.20 * entropy
+           - 0.16 * flip8
+           - 0.14 * crowd
+           - 0.18 * transition_risk)
+    score = max(0.0, min(1.0, raw))
+    if score >= 0.72:
+        label = "高可预测"
+    elif score >= 0.50:
+        label = "中可预测"
+    else:
+        label = "低可预测"
+    return round(score, 4), label
+
+
+def dmr_advise(seq: list[str], v121_side: str, z_threshold: float
+               ) -> tuple[str, str, float, float]:
+    """Dynamic Reversal scan over windows {6,12,24}.
+
+    Returns (target_side, action, best_z, best_density).
+    action ∈ {"NONE", "FOLLOW_TREND", "REVERSE"}.
+    target_side is empty when no signal.
+    """
+    bp = bp_only(seq)
+    if len(bp) < 6 or v121_side not in ("B", "P"):
+        return "", "NONE", 0.0, 0.0
+    best_z, best_density = 0.0, 0.0
+    for w in (6, 12, 24):
+        if len(bp) < w:
+            continue
+        sub = bp[-w:]
+        n = len(sub)
+        z = 2 * (sub.count("B") / n - 0.5) * math.sqrt(n)
+        if n > 1:
+            ch = sum(1 for i in range(1, n) if sub[i] != sub[i - 1])
+            d = 1 - (2 * ch / (n - 1))
+        else:
+            d = 0.0
+        if abs(z) > abs(best_z):
+            best_z, best_density = z, d
+    if abs(best_z) < z_threshold:
+        return "", "NONE", round(best_z, 3), round(best_density, 3)
+    if best_density >= 0.0:
+        target = "B" if best_z > 0 else "P"
+        return target, "FOLLOW_TREND", round(best_z, 3), round(best_density, 3)
+    last = bp[-1]
+    target = "P" if last == "B" else "B"
+    return target, "REVERSE", round(best_z, 3), round(best_density, 3)
+
+
+def kep_units(best_z: float, best_density: float, cap: float) -> float:
+    """Kinetic Energy Position multiplier ∈ [1.0, cap]."""
+    if cap <= 1.0:
+        return 1.0
+    kinetic = abs(best_z) * (1.0 + abs(best_density)) * 0.25
+    return round(max(1.0, min(cap, 1.0 + kinetic)), 3)
+
+
+def qimen_risk_coeff(regime: str, regime_conf: float, consec_errors: int) -> float:
+    """Governance multiplier on bet_size. Always in [0.3, 1.0]."""
+    coeff = 1.0
+    if regime == "CHAOS":
+        coeff *= CONFIG.get("qimen_chaos_coeff", 0.6)
+    elif regime == "MIXED":
+        coeff *= CONFIG.get("qimen_mixed_coeff", 0.8)
+    if consec_errors >= 3:
+        coeff *= 0.7
+    if regime_conf < 0.4:
+        coeff *= 0.85
+    return round(max(0.3, min(1.0, coeff)), 3)
 
 
 def decide(state: dict) -> dict:
@@ -352,6 +554,9 @@ def decide(state: dict) -> dict:
     ph = phase_of(bp_n)
     bias = calc_bias(seq)
     regime = calc_regime(seq)
+
+    apex_on = bool(CONFIG.get("apex_enabled", False))
+    regime_conf, transition_risk = regime_metrics(seq, regime) if apex_on else (0.0, 0.0)
 
     base = {
         "version": VERSION,
@@ -364,6 +569,9 @@ def decide(state: dict) -> dict:
         "consec_wins": state["consec_wins"],
         "mode": "PRUNED",
         "regime": regime,
+        "apex_enabled": apex_on,
+        "regime_confidence": round(regime_conf, 3) if apex_on else None,
+        "transition_risk": round(transition_risk, 3) if apex_on else None,
     }
 
     def wait(mode: str, msg: str, extra: Optional[dict] = None) -> dict:
@@ -376,9 +584,14 @@ def decide(state: dict) -> dict:
             "mode": mode,
             "message": msg,
             "score": 0,
-            "pred_score": 1,
+            "pred_score": 0.5,
             "mono_state": "MONO_INACTIVE",
             "signal_source": "NONE",
+            "predictability_score": None,
+            "predictability_label": None,
+            "dmr_action": "NONE",
+            "kep_units": 1.0,
+            "risk_coeff": 1.0,
         }
         if extra:
             out.update(extra)
@@ -407,36 +620,95 @@ def decide(state: dict) -> dict:
         confidence = 0.5
         source = "SMALL_BET"
 
+    # APEX additive metrics — computed regardless so the response carries them
+    # for the UI, but only fed into gating when their flag is on.
+    pred_l85a, pred_l85a_label = (None, None)
+    if apex_on and CONFIG.get("l85a_enabled"):
+        pred_l85a, pred_l85a_label = l85a_predictability(
+            seq, regime, regime_conf, transition_risk
+        )
+
     if not side:
-        return wait("NORMAL", "no signal", {"pred_score": pred_score})
+        return wait("NORMAL", "no signal",
+                    {"pred_score": pred_score,
+                     "predictability_score": pred_l85a,
+                     "predictability_label": pred_l85a_label})
 
     mono = mono_state_of(seq, side)
 
     if CONFIG["mono_block_opposite"] and mono == "MONO_OPPOSITE":
         return wait("MONO_BLOCK", "MONO_OPPOSITE blocked",
                     {"pred_score": pred_score, "mono_state": mono,
-                     "signal_source": "MONO_BLOCK"})
+                     "signal_source": "MONO_BLOCK",
+                     "predictability_score": pred_l85a,
+                     "predictability_label": pred_l85a_label})
 
     if CONFIG["pred_mode"] == "LOW_ONLY" and pred_score >= 0.50:
         return wait("PRED_MODE_BLOCK", f"LOW_ONLY blocked {pred_score:.3f}",
                     {"pred_score": pred_score, "mono_state": mono,
-                     "signal_source": "PRED_MODE_BLOCK"})
+                     "signal_source": "PRED_MODE_BLOCK",
+                     "predictability_score": pred_l85a,
+                     "predictability_label": pred_l85a_label})
 
     sc = score_calc(p_cal, ph, bias, regime, pred_score, mono)
 
+    # L85A optional score blending — additive, weight-controlled, capped
+    if apex_on and CONFIG.get("l85a_enabled") and pred_l85a is not None:
+        weight = float(CONFIG.get("l85a_score_weight", 0.0))
+        sc = max(0, min(100, int(sc + (pred_l85a - 0.5) * 40 * weight)))
+
+    # DMR — may BLOCK or override side. Reads multi-window z-score / density.
+    dmr_action = "NONE"
+    dmr_z = dmr_d = 0.0
+    if apex_on and CONFIG.get("monolith_enabled") and CONFIG.get("dmr_enabled"):
+        dmr_target, dmr_action, dmr_z, dmr_d = dmr_advise(
+            seq, side, float(CONFIG.get("dmr_z_threshold", 1.6))
+        )
+        if dmr_target and dmr_target != side:
+            mode_name = CONFIG.get("dmr_conflict_action", "BLOCK").upper()
+            if mode_name == "BLOCK":
+                return wait("DMR_BLOCK", f"DMR conflict {side}→{dmr_target}",
+                            {"pred_score": pred_score, "mono_state": mono,
+                             "signal_source": "DMR_BLOCK",
+                             "predictability_score": pred_l85a,
+                             "predictability_label": pred_l85a_label,
+                             "dmr_action": dmr_action})
+            elif mode_name == "FOLLOW_DMR":
+                # Override side; recompute mono and source label
+                side = dmr_target
+                mono = mono_state_of(seq, side)
+                source = "DMR_OVERRIDE"
+
+    # KEP unit multiplier
+    units = 1.0
+    if apex_on and CONFIG.get("monolith_enabled") and CONFIG.get("kep_enabled"):
+        units = kep_units(dmr_z, dmr_d, float(CONFIG.get("kep_max_multiplier", 1.0)))
+
+    # Qimen governance coefficient on bet_size
+    risk = 1.0
+    if apex_on and CONFIG.get("qimen_enabled"):
+        risk = qimen_risk_coeff(regime, regime_conf, state["consec_errors"])
+
     if ph == "EXPLORE":
+        bet = CONFIG["small_bet_size"] * units * risk
+        bet = min(bet, CONFIG["max_bet"])
         return {
             **base,
             "decision": "SMALL",
             "side": side,
             "confidence": confidence,
-            "bet_size": CONFIG["small_bet_size"],
+            "bet_size": round(bet, 4),
             "mode": "EXPLORE",
             "message": "explore small bet",
             "score": sc,
             "pred_score": pred_score,
             "mono_state": mono,
             "signal_source": source,
+            "predictability_score": pred_l85a,
+            "predictability_label": pred_l85a_label,
+            "dmr_action": dmr_action,
+            "kep_units": units,
+            "risk_coeff": risk,
         }
 
     if sc >= CONFIG["score_full"]:
@@ -448,22 +720,30 @@ def decide(state: dict) -> dict:
     else:
         return wait("LOW_SCORE", f"score insufficient {sc}",
                     {"score": sc, "pred_score": pred_score,
-                     "mono_state": mono, "signal_source": source})
+                     "mono_state": mono, "signal_source": source,
+                     "predictability_score": pred_l85a,
+                     "predictability_label": pred_l85a_label,
+                     "dmr_action": dmr_action})
 
-    bet = min(bet, CONFIG["max_bet"])
+    bet = min(bet * units * risk, CONFIG["max_bet"])
 
     return {
         **base,
         "decision": decision,
         "side": side,
         "confidence": confidence,
-        "bet_size": bet,
+        "bet_size": round(bet, 4),
         "mode": source,
         "message": f"{regime} {mono}",
         "score": sc,
         "pred_score": pred_score,
         "mono_state": mono,
         "signal_source": source,
+        "predictability_score": pred_l85a,
+        "predictability_label": pred_l85a_label,
+        "dmr_action": dmr_action,
+        "kep_units": units,
+        "risk_coeff": risk,
     }
 
 
@@ -594,6 +874,7 @@ class HBReq(BaseModel):
 
 
 class TuneReq(BaseModel):
+    # ── V121 base ──
     tau_lo: Optional[float] = Field(None, gt=0, lt=1)
     tau_hi: Optional[float] = Field(None, gt=0, lt=1)
     collect_min: Optional[int] = Field(None, ge=0, le=200)
@@ -604,10 +885,28 @@ class TuneReq(BaseModel):
     score_small: Optional[int] = Field(None, ge=0, le=100)
     small_fill_lo: Optional[float] = Field(None, gt=0, lt=1)
     small_fill_hi: Optional[float] = Field(None, gt=0, lt=1)
-    stop_loss: Optional[float] = None
-    stop_win: Optional[float] = None
+    stop_loss: Optional[float] = Field(None, ge=-1000, le=0)
+    stop_win: Optional[float] = Field(None, ge=0, le=10000)
+    freeze_threshold: Optional[int] = Field(None, ge=1, le=20)
+    freeze_duration: Optional[int] = Field(None, ge=0, le=20)
+    phase1_hands: Optional[int] = Field(None, ge=0, le=200)
+    phase2_hands: Optional[int] = Field(None, ge=0, le=400)
+    cal_shrink: Optional[float] = Field(None, ge=0, le=1)
     pred_mode: Optional[str] = Field(None, pattern="^(LOW_ONLY|OFF)$")
     mono_block_opposite: Optional[bool] = None
+    # ── APEX ──
+    apex_enabled: Optional[bool] = None
+    l85a_enabled: Optional[bool] = None
+    l85a_score_weight: Optional[float] = Field(None, ge=0, le=1)
+    qimen_enabled: Optional[bool] = None
+    qimen_chaos_coeff: Optional[float] = Field(None, ge=0.3, le=1)
+    qimen_mixed_coeff: Optional[float] = Field(None, ge=0.3, le=1)
+    monolith_enabled: Optional[bool] = None
+    dmr_enabled: Optional[bool] = None
+    dmr_conflict_action: Optional[str] = Field(None, pattern="^(BLOCK|FOLLOW_DMR)$")
+    dmr_z_threshold: Optional[float] = Field(None, ge=0.5, le=5.0)
+    kep_enabled: Optional[bool] = None
+    kep_max_multiplier: Optional[float] = Field(None, ge=1.0, le=5.0)
 
 
 # ---------------------------------------------------------------------------
@@ -690,6 +989,7 @@ def _apply_settlement(s: dict, decision_id: str, result: str) -> dict:
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    _load_config_from_db()
 
 
 @app.get("/")
@@ -780,42 +1080,164 @@ async def post_rollback(req: RollbackReq, _: None = Depends(require_auth)):
 @app.post("/ai/tune")
 async def tune(req: TuneReq, _: None = Depends(require_auth)):
     data = req.model_dump(exclude_none=True)
-    if "tau_lo" in data and "tau_hi" in data and data["tau_lo"] >= data["tau_hi"]:
+    if not data:
+        raise HTTPException(400, "no fields to update")
+    # Validate against the merged result (catches partial updates that would
+    # otherwise leave invariants broken against the existing stored value).
+    merged = {**CONFIG, **data}
+    if merged["tau_lo"] >= merged["tau_hi"]:
         raise HTTPException(400, "tau_lo must be < tau_hi")
-    if "score_small" in data and "score_full" in data \
-            and data["score_small"] > data["score_full"]:
+    if merged["small_fill_lo"] >= merged["small_fill_hi"]:
+        raise HTTPException(400, "small_fill_lo must be < small_fill_hi")
+    if merged["score_small"] > merged["score_full"]:
         raise HTTPException(400, "score_small must be <= score_full")
+    if merged["base_bet"] > merged["max_bet"]:
+        raise HTTPException(400, "base_bet must be <= max_bet")
+    if merged["small_bet_size"] > merged["max_bet"]:
+        raise HTTPException(400, "small_bet_size must be <= max_bet")
+    if merged["phase1_hands"] > merged["phase2_hands"]:
+        raise HTTPException(400, "phase1_hands must be <= phase2_hands")
     CONFIG.update(data)
-    return {"status": "ok", "version": VERSION, "config": CONFIG}
+    _persist_config()
+    return {"status": "ok", "version": VERSION, "applied": data, "config": CONFIG}
+
+
+@app.get("/ai/config")
+async def get_config(_: None = Depends(require_auth)):
+    return {"version": VERSION, "config": CONFIG}
+
+
+@app.post("/ai/config/reset")
+async def reset_config(_: None = Depends(require_auth)):
+    """Drop persisted overrides and reload defaults (in-process)."""
+    with db() as conn:
+        conn.execute("DELETE FROM table_state WHERE table_id = ?", (CONFIG_KEY,))
+    # Cannot regenerate the original literal at runtime — instead recompute by
+    # re-importing module defaults. Simpler: tell the operator to restart.
+    return {"status": "ok", "message": "persisted overrides cleared; restart server to fully reload defaults"}
+
+
+@app.get("/ai/snapshot")
+async def snapshot(_: None = Depends(require_auth)):
+    out = []
+    for tid, s in TABLES.items():
+        last = s.get("last_decision") or {}
+        out.append({
+            "table_id": tid,
+            "shoe_id": s.get("shoe_id"),
+            "hand_no": s.get("hand_no"),
+            "bp_hand_no": s.get("bp_hand_no"),
+            "shoe_pnl": round(s.get("shoe_pnl", 0.0), 4),
+            "net_pnl": round(s.get("net_pnl", 0.0), 4),
+            "wins": s.get("wins"),
+            "losses": s.get("losses"),
+            "freeze": s.get("freeze"),
+            "loss_streak": s.get("loss_streak"),
+            "consec_errors": s.get("consec_errors"),
+            "consec_wins": s.get("consec_wins"),
+            "max_dd": round(s.get("max_dd", 0.0), 4),
+            "last_outcome": s.get("last_outcome"),
+            "last_decision": {
+                "decision": last.get("decision"),
+                "side": last.get("side"),
+                "bet_size": last.get("bet_size"),
+                "score": last.get("score"),
+                "regime": last.get("regime"),
+                "mono_state": last.get("mono_state"),
+                "predictability_label": last.get("predictability_label"),
+                "dmr_action": last.get("dmr_action"),
+                "decision_id": last.get("decision_id"),
+            },
+            "tail_sequence": "".join(s.get("sequence", [])[-30:]),
+        })
+    return {"version": VERSION, "tables": out, "ts": time.time()}
+
+
+@app.get("/ai/recent_hands")
+async def recent_hands(table_id: Optional[str] = None, limit: int = 50,
+                       _: None = Depends(require_auth)):
+    limit = max(1, min(500, limit))
+    with _connect() as conn:
+        if table_id:
+            rows = conn.execute(
+                "SELECT id, ts, table_id, shoe_id, hand_no, decision_id, outcome, "
+                "result, decision, side, bet_size, score, regime, pred_score, "
+                "mono_state, signal_source, mode, pnl_delta, pnl_running "
+                "FROM hands WHERE table_id = ? ORDER BY id DESC LIMIT ?",
+                (table_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, ts, table_id, shoe_id, hand_no, decision_id, outcome, "
+                "result, decision, side, bet_size, score, regime, pred_score, "
+                "mono_state, signal_source, mode, pnl_delta, pnl_running "
+                "FROM hands ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    return {
+        "version": VERSION,
+        "count": len(rows),
+        "hands": [dict(r) for r in rows],
+    }
 
 
 @app.get("/ai/report")
 async def report(_: None = Depends(require_auth)):
-    total_bets = sum(s["wins"] + s["losses"] for s in TABLES.values())
-    wins = sum(s["wins"] for s in TABLES.values())
-    losses = sum(s["losses"] for s in TABLES.values())
-    net_pnl = sum(s["net_pnl"] for s in TABLES.values())
-    wr = wins / total_bets if total_bets else 0.0
-    wl, wu = wilson(wins, total_bets)
+    # In-memory totals (current session per table). Treats partially-loaded
+    # state as authoritative for live numbers.
+    live_bets = sum(s["wins"] + s["losses"] for s in TABLES.values())
+    live_wins = sum(s["wins"] for s in TABLES.values())
+    live_losses = sum(s["losses"] for s in TABLES.values())
+    live_pnl = sum(s["net_pnl"] for s in TABLES.values())
+    max_dd = max([s["max_dd"] for s in TABLES.values()] or [0])
 
+    # Lifetime totals from the persisted hands log — these are the truth.
     with _connect() as conn:
-        row = conn.execute(
+        h = conn.execute(
+            "SELECT COUNT(*) AS n, "
+            "SUM(CASE WHEN result='WIN'  THEN 1 ELSE 0 END) AS w, "
+            "SUM(CASE WHEN result='LOSS' THEN 1 ELSE 0 END) AS l, "
+            "SUM(CASE WHEN result='TIE'  THEN 1 ELSE 0 END) AS t, "
+            "COALESCE(SUM(pnl_delta),0) AS pnl "
+            "FROM hands WHERE result IN ('WIN','LOSS','TIE')"
+        ).fetchone()
+        sh = conn.execute(
             "SELECT COUNT(*), COALESCE(SUM(pnl),0), COALESCE(AVG(pnl),0) FROM shoes"
         ).fetchone()
-
+    db_settled = (h["w"] or 0) + (h["l"] or 0)
+    wl, wu = wilson(h["w"] or 0, db_settled)
+    wr = ((h["w"] or 0) / db_settled) if db_settled else 0.0
     return {
         "version": VERSION,
-        "total_bets": total_bets,
-        "wins": wins,
-        "losses": losses,
+        "live": {
+            "total_bets": live_bets,
+            "wins": live_wins,
+            "losses": live_losses,
+            "net_pnl": round(live_pnl, 4),
+            "max_drawdown": round(max_dd, 4),
+        },
+        "lifetime": {
+            "total_settled": db_settled,
+            "wins": h["w"] or 0,
+            "losses": h["l"] or 0,
+            "ties": h["t"] or 0,
+            "pnl": round(h["pnl"] or 0.0, 4),
+            "win_rate": round(wr, 4),
+            "wilson_lower": round(wl, 4),
+            "wilson_upper": round(wu, 4),
+        },
+        # Backward-compat keys used by older terminal builds.
+        "total_bets": live_bets,
+        "wins": live_wins,
+        "losses": live_losses,
         "win_rate": round(wr, 4),
         "wilson_lower": round(wl, 4),
         "wilson_upper": round(wu, 4),
-        "net_pnl": round(net_pnl, 4),
-        "max_drawdown": round(max([s["max_dd"] for s in TABLES.values()] or [0]), 4),
-        "total_shoes": row[0],
-        "shoes_pnl": round(row[1], 4),
-        "avg_shoe_pnl": round(row[2], 4),
+        "net_pnl": round(live_pnl, 4),
+        "max_drawdown": round(max_dd, 4),
+        "total_shoes": sh[0],
+        "shoes_pnl": round(sh[1], 4),
+        "avg_shoe_pnl": round(sh[2], 4),
         "config": CONFIG,
     }
 
@@ -861,6 +1283,18 @@ def terminal():
     return HTMLResponse(
         "<h1>terminal.html missing</h1>"
         f"<p>Place terminal.html at {TERMINAL_HTML_PATH} or set V121_TERMINAL_HTML.</p>",
+        status_code=404,
+    )
+
+
+@app.get("/console", response_class=HTMLResponse)
+def console():
+    if os.path.exists(CONSOLE_HTML_PATH):
+        with open(CONSOLE_HTML_PATH, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    return HTMLResponse(
+        "<h1>console.html missing</h1>"
+        f"<p>Place console.html at {CONSOLE_HTML_PATH} or set V121_CONSOLE_HTML.</p>",
         status_code=404,
     )
 

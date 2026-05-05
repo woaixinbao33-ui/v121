@@ -22,8 +22,9 @@
   #dec { background:#15152a; border-radius:10px; padding:14px; text-align:center;
          font-size:20px; margin:10px 0; color:#00ff88; min-height:96px;
          white-space:pre-wrap; line-height:1.4 }
-  #seq, #log { background:#111; border-radius:8px; padding:8px; margin:8px 0;
+  #seq, #log, #apex { background:#111; border-radius:8px; padding:8px; margin:8px 0;
                word-break:break-all; font-size:13px; max-height:160px; overflow-y:auto }
+  #apex { color:#9cdcfe }
   #login { background:#15152a; padding:14px; border-radius:8px }
   #login p { font-size:13px; color:#aaa; margin:4px 0 }
   .hide { display:none !important }
@@ -74,7 +75,12 @@
     <button class="y" onclick="report()">报告</button>
   </div>
 
+  <div class="row">
+    <button class="g" onclick="window.open('/console','_blank')">调参控制台</button>
+  </div>
+
   <div id="seq">序列：</div>
+  <div id="apex" class="hide">APEX 状态：</div>
   <div id="log">就绪</div>
 </div>
 
@@ -171,6 +177,26 @@ function show(r) {
   lastDecisionId = r.decision_id || null;
   $("dec").innerText = txt + "\n" + mode + "  分 " + score + "  靴盈亏 " + pnl
     + (lastDecisionId ? "\nID " + lastDecisionId.slice(0, 8) : "");
+
+  // APEX detail panel — only visible when apex_enabled
+  if (r.apex_enabled) {
+    var lines = [];
+    lines.push("体制 " + (r.regime || "-") +
+      "  置信 " + (r.regime_confidence != null ? r.regime_confidence : "-") +
+      "  转移 " + (r.transition_risk != null ? r.transition_risk : "-"));
+    lines.push("L85A " + (r.predictability_label || "-") +
+      " (" + (r.predictability_score != null ? r.predictability_score : "-") + ")" +
+      "  pred_score " + (r.pred_score != null ? Number(r.pred_score).toFixed(3) : "-"));
+    lines.push("MONO " + (r.mono_state || "-") +
+      "  DMR " + (r.dmr_action || "NONE") +
+      "  KEP×" + (r.kep_units != null ? r.kep_units : "1") +
+      "  RISK " + (r.risk_coeff != null ? r.risk_coeff : "1"));
+    $("apex").innerText = "APEX:\n" + lines.join("\n");
+    $("apex").classList.remove("hide");
+  } else {
+    $("apex").classList.add("hide");
+  }
+
   lg(d + " " + side + " " + mode + " " + msg);
 }
 
