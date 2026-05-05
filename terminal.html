@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>V121 Terminal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { background:#0d0d1a; color:#eee; font-family: -apple-system, "PingFang SC", Arial, sans-serif;
+         padding:12px; max-width:480px; margin:auto; -webkit-tap-highlight-color: transparent; }
+  h2 { text-align:center; color:#f0c040; margin:6px 0 10px }
+  .row { display:flex; gap:6px; margin:8px 0 }
+  .row > * { flex:1 }
+  select, input { padding:10px; background:#15152a; color:#eee; border:1px solid #333;
+                  border-radius:6px; font-size:15px; width:100% }
+  button { padding:18px 0; border:0; border-radius:8px; color:#fff;
+           font-size:18px; font-weight:bold; touch-action: manipulation }
+  .b { background:#c0392b } .p { background:#2471a3 } .t { background:#1e8449 }
+  .w { background:#145a32 } .l { background:#7b241c } .n { background:#6c3483 }
+  .g { background:#34495e } .y { background:#b9770e }
+  #dec { background:#15152a; border-radius:10px; padding:14px; text-align:center;
+         font-size:20px; margin:10px 0; color:#00ff88; min-height:96px;
+         white-space:pre-wrap; line-height:1.4 }
+  #seq, #log { background:#111; border-radius:8px; padding:8px; margin:8px 0;
+               word-break:break-all; font-size:13px; max-height:160px; overflow-y:auto }
+  #login { background:#15152a; padding:14px; border-radius:8px }
+  #login p { font-size:13px; color:#aaa; margin:4px 0 }
+  .hide { display:none !important }
+  .pill { display:inline-block; padding:2px 8px; background:#333; border-radius:10px;
+          font-size:12px; margin-left:6px }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h2>V121 登录</h2>
+  <p>API Key 仅保存在本机 sessionStorage，刷新后需重新输入。请勿在共用设备保存。</p>
+  <div class="row"><input id="apikey" type="password" autocomplete="off" placeholder="输入 API Key"></div>
+  <div class="row"><input id="base" type="text" placeholder="后端地址（留空=同域）"></div>
+  <div class="row"><button class="g" onclick="doLogin()">进入</button></div>
+  <div id="loginerr" style="color:#e74c3c; margin-top:6px"></div>
+</div>
+
+<div id="app" class="hide">
+  <h2>V121 终端 <span class="pill" id="ver">-</span></h2>
+
+  <div class="row">
+    <select id="tid">
+      <option>T1</option><option>T2</option><option>T3</option>
+      <option>T4</option><option>T5</option>
+    </select>
+    <button class="g" onclick="hb()">心跳</button>
+    <button class="y" onclick="logout()">登出</button>
+  </div>
+
+  <div id="dec">未录入</div>
+
+  <div class="row">
+    <button class="b" onclick="rec('B')">庄 B</button>
+    <button class="p" onclick="rec('P')">闲 P</button>
+    <button class="t" onclick="rec('T')">和 T</button>
+  </div>
+
+  <div class="row">
+    <button class="w" onclick="settle('WIN')">赢</button>
+    <button class="l" onclick="settle('LOSS')">输</button>
+    <button class="t" onclick="settle('TIE')">和</button>
+  </div>
+
+  <div class="row">
+    <button class="n" onclick="newShoe()">新靴</button>
+    <button class="g" onclick="rollback()">回退</button>
+    <button class="y" onclick="report()">报告</button>
+  </div>
+
+  <div id="seq">序列：</div>
+  <div id="log">就绪</div>
+</div>
+
+<script>
+"use strict";
+
+var KEY = null, BASE = "";
+var seq = [];
+var lastDecisionId = null;
+
+function $(id) { return document.getElementById(id); }
+
+function lg(s) {
+  var t = new Date().toLocaleTimeString();
+  $("log").innerText = "[" + t + "] " + s + "\n" + $("log").innerText;
+}
+
+function headers() {
+  return { "Content-Type": "application/json", "X-API-Key": KEY };
+}
+
+function api(path, body) {
+  return fetch(BASE + path, {
+    method: "POST", headers: headers(), body: JSON.stringify(body || {})
+  }).then(function (r) {
+    return r.json().then(function (j) {
+      if (!r.ok) throw new Error(j.detail || r.statusText);
+      return j;
+    });
+  });
+}
+
+function getJSON(path) {
+  return fetch(BASE + path, { headers: { "X-API-Key": KEY } })
+    .then(function (r) { return r.json(); });
+}
+
+function tid() { return $("tid").value; }
+
+function doLogin() {
+  var k = $("apikey").value.trim();
+  var b = $("base").value.trim().replace(/\/$/, "");
+  if (!k) { $("loginerr").innerText = "请输入 API Key"; return; }
+  KEY = k; BASE = b;
+  fetch(BASE + "/healthz")
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      // sanity: needs auth roundtrip
+      return api("/v100/heartbeat", { table_id: tid() }).then(function (hb) {
+        sessionStorage.setItem("v121_key", KEY);
+        sessionStorage.setItem("v121_base", BASE);
+        $("ver").innerText = j.version || hb.version || "";
+        $("login").classList.add("hide");
+        $("app").classList.remove("hide");
+        lg("登录成功");
+      });
+    })
+    .catch(function (e) {
+      $("loginerr").innerText = "登录失败：" + e.message;
+    });
+}
+
+function logout() {
+  sessionStorage.removeItem("v121_key");
+  sessionStorage.removeItem("v121_base");
+  KEY = null;
+  location.reload();
+}
+
+function show(r) {
+  if (!r) return;
+  if (r.detail) { lg("错误 " + r.detail); return; }
+  var d = r.decision || "WAIT";
+  var side = r.side || "";
+  var bet = r.bet_size || 0;
+  var mode = r.mode || "";
+  var score = r.score || 0;
+  var msg = r.message || "";
+  var pnl = (r.shoe_pnl || 0).toFixed(2);
+
+  var txt = "观望";
+  if (d !== "WAIT") {
+    var label = (d === "FULL") ? "全额" : "小注";
+    var sideLabel = (side === "B") ? "庄 B" : "闲 P";
+    txt = label + " → " + sideLabel + "  注 " + bet;
+  } else {
+    if (mode === "COLLECTING") txt = "积累中 " + msg;
+    else if (mode === "FREEZE") txt = "冻结中 " + msg;
+    else if (mode === "PRED_MODE_BLOCK") txt = "LOW_ONLY 拦截";
+    else if (mode === "MONO_BLOCK") txt = "MONO 拦截";
+    else if (mode === "STOP_LOSS") txt = "止损暂停";
+  }
+
+  lastDecisionId = r.decision_id || null;
+  $("dec").innerText = txt + "\n" + mode + "  分 " + score + "  靴盈亏 " + pnl
+    + (lastDecisionId ? "\nID " + lastDecisionId.slice(0, 8) : "");
+  lg(d + " " + side + " " + mode + " " + msg);
+}
+
+function rec(o) {
+  seq.push(o);
+  $("seq").innerText = "序列(" + seq.length + ")：" + seq.join("");
+  api("/v100/outcome", { table_id: tid(), outcome: o }).then(show).catch(function (e) {
+    lg("录入失败 " + e.message);
+  });
+}
+
+function settle(r) {
+  if (!lastDecisionId) {
+    lg("无待结算决策（上一手是 WAIT 或已结算）");
+    return;
+  }
+  api("/v100/settle", {
+    table_id: tid(), decision_id: lastDecisionId, result: r
+  }).then(show).catch(function (e) {
+    lg("结算失败 " + e.message);
+  });
+}
+
+function newShoe() {
+  api("/v100/new_shoe", { table_id: tid() }).then(function (r) {
+    seq = [];
+    $("seq").innerText = "序列(0)：";
+    show(r);
+    lg("新靴已开");
+  }).catch(function (e) { lg("新靴失败 " + e.message); });
+}
+
+function rollback() {
+  api("/v100/rollback", { table_id: tid() }).then(function (r) {
+    seq = (r.sequence || "").split("");
+    $("seq").innerText = "序列(" + seq.length + ")：" + seq.join("");
+    show(r.decision);
+    lg("已回退");
+  }).catch(function (e) { lg("回退失败 " + e.message); });
+}
+
+function hb() {
+  api("/v100/heartbeat", { table_id: tid() }).then(function (r) {
+    lg("心跳 hand=" + r.hand_no + " pnl=" + (r.shoe_pnl || 0).toFixed(2)
+       + " freeze=" + r.freeze);
+  }).catch(function (e) { lg("心跳失败 " + e.message); });
+}
+
+function report() {
+  getJSON("/ai/report").then(function (r) {
+    lg("总注 " + r.total_bets + "  胜率 "
+       + ((r.win_rate || 0) * 100).toFixed(1) + "%  净 " + r.net_pnl
+       + "  Wilson [" + r.wilson_lower + ", " + r.wilson_upper + "]");
+  }).catch(function (e) { lg("报告失败 " + e.message); });
+}
+
+(function autoLogin() {
+  var k = sessionStorage.getItem("v121_key");
+  var b = sessionStorage.getItem("v121_base") || "";
+  if (k) {
+    $("apikey").value = k;
+    $("base").value = b;
+    doLogin();
+  }
+})();
+</script>
+</body>
+</html>
