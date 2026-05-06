@@ -162,6 +162,9 @@ CONFIG: dict = {
     "pro_max_daily_risk": 8.0,
     "pro_loss_2_freeze": 2,
     "pro_loss_3_freeze": 5,
+    # ── 自动驯化（满 N 靴自动跑回测）────────────────────────────────────────
+    "auto_train_enabled": True,
+    "auto_train_milestones": [10, 30, 50, 100, 200, 500, 1000],
 }
 
 CONFIG_KEY = "__config__"
@@ -267,6 +270,18 @@ def init_db() -> None:
                 created     REAL NOT NULL,
                 settled     INTEGER NOT NULL DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS training_runs (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts           REAL NOT NULL,
+                trigger      TEXT NOT NULL,
+                shoe_count   INTEGER NOT NULL,
+                table_id     TEXT,
+                overall_json TEXT NOT NULL,
+                full_json    TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_runs_ts
+                ON training_runs(ts DESC);
             """
         )
 
@@ -1245,6 +1260,8 @@ class TuneReq(BaseModel):
     pro_score_standard: Optional[int] = Field(None, ge=0, le=100)
     pro_score_low: Optional[int] = Field(None, ge=0, le=100)
     pro_score_wait: Optional[int] = Field(None, ge=0, le=100)
+    # 自动驯化
+    auto_train_enabled: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1378,17 +1395,53 @@ async def post_settle(req: SettleReq, _: None = Depends(require_auth)):
         return _apply_settlement(s, req.decision_id, req.result.upper())
 
 
+def _maybe_auto_train(table_id: str) -> Optional[dict]:
+    """如果总靴数命中 milestone，触发一次自动回测并存表。
+
+    Returns the saved training_run record dict if a run was triggered, else None.
+    Lazy-imports admin to avoid circular import at module load.
+    """
+    if not CONFIG.get("auto_train_enabled"):
+        return None
+    milestones = CONFIG.get("auto_train_milestones", []) or []
+    if not milestones:
+        return None
+    with _connect() as conn:
+        n_shoes = conn.execute("SELECT COUNT(*) FROM shoes").fetchone()[0]
+    if n_shoes not in milestones:
+        return None
+    try:
+        from admin import compute_backtest  # type: ignore
+    except Exception:
+        return None
+    result = compute_backtest()
+    full_json = json.dumps(result, ensure_ascii=False)
+    overall_json = json.dumps(result.get("overall", {}), ensure_ascii=False)
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO training_runs(ts, trigger, shoe_count, table_id, "
+            "overall_json, full_json) VALUES(?,?,?,?,?,?)",
+            (time.time(), f"auto_{n_shoes}", n_shoes, None, overall_json, full_json),
+        )
+        run_id = cur.lastrowid
+    return {"id": run_id, "shoe_count": n_shoes, "trigger": f"auto_{n_shoes}"}
+
+
 @app.post("/v100/new_shoe")
 async def post_new_shoe(req: NewShoeReq, _: None = Depends(require_auth)):
     async with TABLE_LOCKS[req.table_id]:
         s = get_table(req.table_id)
+        triggered = None
         if s["hand_no"] > 0:
             save_shoe(s)
+            triggered = _maybe_auto_train(req.table_id)
         TABLES[req.table_id] = new_table(req.table_id)
         s = TABLES[req.table_id]
         d = decide(s)
         s["last_decision"] = d
         _persist_state(s)
+        if triggered:
+            d = {**d, "auto_train_triggered": triggered}
         return d
 
 

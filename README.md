@@ -324,7 +324,144 @@ record outcome → decide()
 
 每个 APEX / APEX_PRO 步骤独立 flag，关闭即等同于直通透传。
 
-## 16. 全部环境变量
+## 16. 自动驯化 + 回测 + 训练包
+
+### 自动驯化触发
+
+每开新靴时，如果**总靴数**命中 `auto_train_milestones` 里的任一值（默认 `[10, 30, 50, 100, 200, 500, 1000]`），系统会自动跑一次全库回测并把结果存进 `training_runs` 表。
+
+- 默认 `auto_train_enabled=True`，可以在 `/console` 里关掉。
+- 自动驯化跑在 `/v100/new_shoe` 同一线程内，是**毫秒级**的纯 SQL 聚合，不会卡录入。
+- 触发后，新一手 decide() 响应里会带 `auto_train_triggered: {id, shoe_count, trigger}`。
+
+### 在管理后台查看回测
+
+`/admin` → 顶部「回测驯化」Tab。功能：
+
+- 「立即回测」：扫一遍 `hands` 表，按 截图同款的 5 段输出（总体 / source / regime / pred / mono）。
+- 「下载训练包」：把回测 JSON / 报告 TXT / BP 序列 / CSV 流水 / CONFIG 快照 / AI 提示词模板 全部打包成 ZIP。
+- 「存档为驯化记录」：把当前回测手动写入 `training_runs`（trigger=`manual`）。
+- 历史区列出最近 20 条驯化记录，含触发类型、靴数、注次、胜率、PnL。
+- 「全靴 BP TXT」/「TSV」直接拉走 BP 序列文件（与本地 Pythonista 一键脚本同格式）。
+- 「一键复制」把报告复制到剪贴板，或下载 `.txt` 用于发给 AI。
+
+### 训练包 ZIP 内容
+
+```
+v121_training_bundle_YYYYMMDD_HHMMSS.zip
+├── overall.json           总体回测（含 Wilson 区间）
+├── by_source.json         信号来源分组（PREDICT / SMALL_BET / DMR_OVERRIDE / ...）
+├── by_regime.json         体制（TREND_B/P / OSC / CHAOS / MIXED）
+├── by_pred_bucket.json    可预测分桶（<0.35 / 0.35-0.50 / 0.50-0.72 / >=0.72）
+├── by_mono.json           Monolith 状态（SAME / OPPOSITE / INACTIVE）
+├── backtest_full.json     上述 5 项的合并版
+├── backtest_report.txt    人类可读汇总（与手机终端截图同格式）
+├── bp_training.txt        全靴 BP 序列：序号.台桌.日期.BPBPB...
+├── bp_training.tsv        同上 + 元数据列（pandas/Excel 可读）
+├── recent_hands.csv       最近 500 手原始流水（带 BOM，Excel 中文不乱码）
+├── config.json            当前 CONFIG 快照
+├── ai_prompt.md           发给 ChatGPT/Claude 的标准提问模板
+└── README.txt             包内文件说明
+```
+
+## 17. 把训练包发给 AI 大模型优化（小白零基础步骤）
+
+### 步骤一：在手机或电脑打开管理后台
+
+```
+https://v121.example.com/admin
+```
+
+输入管理员密码登录 → 顶部点「回测驯化」 Tab → 点「下载训练包」按钮 → 浏览器会下载一个 `v121_training_bundle_xxx.zip`。
+
+### 步骤二：解压
+
+- iPhone：用「文件」App 长按 ZIP → 解压。
+- Android：用 RAR / ZArchiver 解压。
+- 电脑：双击解压。
+
+### 步骤三：打开 AI 大模型
+
+支持任一：
+
+- ChatGPT (https://chat.openai.com)
+- Claude (https://claude.ai)
+- Gemini (https://gemini.google.com)
+- 通义千问 / Kimi / DeepSeek 等国内大模型
+
+### 步骤四：上传 + 粘贴提示词
+
+1. 在 AI 对话框上传以下文件作为附件（一次拖进去）：
+   ```
+   overall.json
+   by_source.json
+   by_regime.json
+   by_pred_bucket.json
+   by_mono.json
+   backtest_report.txt
+   config.json
+   ```
+2. 打开解压出的 `ai_prompt.md`，**全选 → 复制 → 粘贴到 AI 对话框**。
+3. 发送，等待 AI 输出诊断 + 必改清单 + 应急封禁 + 风险治理建议。
+
+### 步骤五：把建议落地
+
+AI 会给你一个 JSON 块，例如：
+
+```json
+{
+  "tau_hi": 0.575,
+  "qimen_chaos_coeff": 0.5,
+  "pro_drift_enabled": true,
+  "score_small": 50
+}
+```
+
+打开 `/console` → 顶部「参数」Tab → 把 AI 给的每个键的新值填进对应输入框 → 点「保存到云」。
+
+服务端会校验所有不变量（tau_lo &lt; tau_hi 之类），不通过会返回 400。
+
+### 步骤六：观察 3 ~ 5 靴
+
+回到「回测驯化」Tab，跑一次「立即回测」对比 PnL / 胜率 / 最大回撤。每改一组参数**至少跑满 3 靴**再决定是否保留。
+
+### 关键提醒
+
+> **AI 不能改变赌场的庄家边际**。它给的建议只是在重新分配方差与暴露，目标是「同样亏损下更小回撤」「同样下注次数下更高命中率」。
+>
+> 如果 AI 在样本数 < 200 注的情况下给你「鼓吹」高胜率建议，**忽略它**——那是噪声。
+>
+> 任何要求你「翻倍 / 追损 / 马丁格尔 / 强制补仓」的建议，**直接拒绝**——本系统的风险治理层会硬封顶。
+
+## 18. 全部环境变量
+
+| 变量 | 必填 | 默认 | 说明 |
+|---|---|---|---|
+| `V121_API_KEY` | ✅ | — | 手机端 / 调参控制台 X-API-Key |
+| `V121_ADMIN_PASSWORD` | ✅ | — | 管理后台密码（≥6 位）|
+| `V121_DB_PATH` |  | `/opt/v121/v121.db` | SQLite 文件路径 |
+| `V121_TERMINAL_HTML` |  | `/opt/v121/terminal.html` | 手机端静态页 |
+| `V121_CONSOLE_HTML` |  | `/opt/v121/console.html` | 调参控制台静态页 |
+| `V121_ADMIN_HTML` |  | `/opt/v121/admin.html` | 管理后台静态页 |
+| `V121_BANKER_COMMISSION` |  | `0.05` | 庄家佣金（5%）|
+| `V121_HOST` |  | `127.0.0.1` | uvicorn 监听地址 |
+| `V121_PORT` |  | `8000` | uvicorn 端口 |
+
+## 19. 回测 / 驯化 / 训练包路由速查
+
+| 路由 | 方法 | 鉴权 | 用途 |
+|---|---|---|---|
+| `/admin/api/backtest` | GET | cookie | 立即回测，返回 JSON（同截图格式）|
+| `/admin/api/backtest/report` | GET | cookie | 同上，返回 text/plain（可一键发 AI）|
+| `/admin/api/training_run` | POST | cookie | 手动跑一次回测并存表（trigger=manual）|
+| `/admin/api/training_runs` | GET | cookie | 最近 N 条驯化记录（含 auto_10/30/50/100）|
+| `/admin/api/training_runs/{id}` | GET | cookie | 单条驯化记录的完整 JSON |
+| `/admin/api/training_bundle` | GET | cookie | 下载完整训练包 ZIP |
+| `/admin/api/export_bp_training` | GET | cookie | 全靴 BP 序列 TXT |
+| `/admin/api/export_bp_training/{tid}` | GET | cookie | 单桌 BP 序列 TXT |
+| `/admin/api/export_bp_tsv` | GET | cookie | 全靴 BP TSV（带元数据列）|
+
+可选 `?table_id=T1` 参数过滤单桌。
 
 | 变量 | 必填 | 默认 | 说明 |
 |---|---|---|---|
