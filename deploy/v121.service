@@ -1,0 +1,36 @@
+[Unit]
+Description=V121 Cloud APEX
+After=network.target
+
+[Service]
+Type=simple
+User=v121
+Group=v121
+WorkingDirectory=/opt/v121
+EnvironmentFile=/etc/v121.env
+ExecStart=/opt/v121/.venv/bin/uvicorn server:app \
+    --host ${V121_HOST} \
+    --port ${V121_PORT} \
+    --workers 1 \
+    --proxy-headers \
+    --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=3
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/v121
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

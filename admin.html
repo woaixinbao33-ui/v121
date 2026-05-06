@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>V121 管理后台</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:rgba(255,255,255,.1)}
+body{font-family:-apple-system,"PingFang SC",Arial,sans-serif;background:#0f0f0f;color:#e0e0e0;min-height:100vh}
+.top{background:#1a1a1a;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #333}
+.top h1{font-size:16px;font-weight:700}
+.btn{padding:8px 14px;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;display:inline-block;text-decoration:none;color:#fff}
+.btn-red{background:#c0392b}.btn-green{background:#27ae60}.btn-blue{background:#2980b9}
+.btn-gray{background:#444;color:#ccc}.btn-orange{background:#e67e22}
+.login-box{max-width:340px;margin:100px auto;background:#1a1a1a;border-radius:12px;padding:28px;text-align:center}
+.login-box h2{margin-bottom:8px}
+.login-box .hint{color:#888;font-size:12px;margin-bottom:18px}
+.login-box input{width:100%;padding:12px;background:#2a2a2a;border:1px solid #444;border-radius:8px;color:#fff;font-size:20px;letter-spacing:8px;text-align:center;margin-bottom:14px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;padding:14px}
+.card{background:#1a1a1a;border-radius:10px;padding:12px;border:2px solid #333;cursor:pointer;user-select:none;-webkit-user-select:none;transition:.15s}
+.card.active{border-color:#2980b9;background:#152030}
+.card.locked{border-color:#c0392b;background:#1f1010}
+.card h3{font-size:14px;margin-bottom:6px}
+.card .stat{font-size:11px;color:#888;margin-top:3px}
+.card .pnl{font-size:14px;font-weight:700;margin-top:6px}
+.pnl.pos{color:#2ecc71}.pnl.neg{color:#e74c3c}.pnl.zero{color:#888}
+.lock-badge{font-size:10px;background:#c0392b;color:#fff;padding:1px 5px;border-radius:3px}
+.live-dot{color:#2ecc71;font-size:11px}
+#detail{margin:0 14px 14px;border-radius:10px;background:#1a1a1a;padding:14px}
+#detail h2{font-size:15px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
+.road{font-size:18px;line-height:1.85;word-break:break-all;margin:8px 0;padding:8px;background:#0a0a0a;border-radius:6px;min-height:36px}
+.ht{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+.ht th{background:#222;padding:5px 7px;text-align:left;color:#888;font-weight:normal}
+.ht td{padding:5px 7px;border-bottom:1px solid #1a1a1a}
+.oB{color:#e74c3c;font-weight:700}.oP{color:#3498db;font-weight:700}.oT{color:#2ecc71;font-weight:700}
+.err{background:#2a0f0f;color:#ff6b6b;padding:10px;border-radius:6px;font-size:12px;margin:10px 0;white-space:pre-wrap;word-break:break-all;font-family:monospace}
+#msgBar{padding:8px 16px;font-size:13px;color:#f39c12;background:#1a1500;border-bottom:1px solid #2a2200}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.summary{color:#888;font-size:12px;margin:8px 0 4px}
+.tab-bar{display:flex;gap:4px;padding:8px 14px 0;background:#0f0f0f}
+.tab-bar button{flex:1;padding:10px 0;background:#222;color:#bbb;border:0;border-radius:8px 8px 0 0;font-size:14px;font-weight:bold;cursor:pointer}
+.tab-bar button.on{background:#1a1a1a;color:#f0c040}
+#bt-report{background:#0a0a0a;border-radius:8px;padding:10px;font-family:Menlo,Consolas,monospace;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:#9ed4ff;max-height:480px;overflow:auto}
+.bt-card{background:#1a1a1a;border-radius:10px;padding:12px;margin:10px 14px}
+.bt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:8px}
+.bt-grid .item{background:#0f0f0f;padding:8px;border-radius:6px;font-size:12px}
+.bt-grid .item .k{color:#888}.bt-grid .item .v{color:#f0c040;font-weight:bold;font-size:14px}
+.bt-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed #2a2a2a;font-size:12px}
+.bt-row:last-child{border-bottom:0}
+.bt-row .v.pos{color:#2ecc71}.bt-row .v.neg{color:#e74c3c}.bt-row .v.zero{color:#888}
+.runs-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+.runs-tbl th{background:#222;padding:5px 7px;text-align:left;color:#888;font-weight:normal}
+.runs-tbl td{padding:5px 7px;border-bottom:1px solid #1a1a1a}
+.milestone-bar{height:8px;background:#222;border-radius:4px;overflow:hidden;margin:8px 0 4px}
+.milestone-bar > div{height:100%;background:linear-gradient(90deg,#27ae60,#f0c040);transition:.3s}
+</style></head>
+<body>
+
+<div id="loginPage">
+  <div class="login-box">
+    <h2>🔐 V121 管理后台</h2>
+    <div class="hint">请输入管理员密码（部署人在环境变量中配置，默认值已禁用）</div>
+    <input type="password" id="pwdInput" maxlength="64" placeholder="••••••" inputmode="text" autocomplete="off">
+    <button class="btn btn-blue" style="width:100%;padding:12px;font-size:15px" id="loginBtn">登 录</button>
+    <div id="loginErr" style="color:#e74c3c;margin-top:12px;font-size:13px"></div>
+  </div>
+</div>
+
+<div id="mainPage" style="display:none">
+  <div class="top">
+    <h1>⚙️ V121 管理后台</h1>
+    <div>
+      <button class="btn btn-orange" id="unlockAllBtn">🔓 一键解锁全部</button>
+      <button class="btn btn-gray" id="logoutBtn">退出</button>
+    </div>
+  </div>
+  <div id="msgBar" style="display:none"></div>
+
+  <div class="tab-bar">
+    <button id="tabOverviewBtn" class="on" onclick="showTab('overview')">总览</button>
+    <button id="tabBacktestBtn" onclick="showTab('backtest')">回测驯化</button>
+  </div>
+
+  <div id="tab-overview">
+    <div id="cards" class="cards"></div>
+    <div id="detail" style="display:none"></div>
+  </div>
+
+  <div id="tab-backtest" style="display:none">
+    <div class="bt-card">
+      <h3 style="margin:0 0 8px;color:#f0c040">回测控制</h3>
+      <div class="actions">
+        <select id="btTable" style="flex:1;padding:8px;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#fff">
+          <option value="">全部桌台</option>
+          <option>T1</option><option>T2</option><option>T3</option>
+          <option>T4</option><option>T5</option>
+        </select>
+        <button class="btn btn-blue" id="runBtBtn">立即回测</button>
+        <button class="btn btn-green" id="dlBundleBtn">📦 下载训练包</button>
+        <button class="btn btn-orange" id="saveRunBtn">💾 存档为驯化记录</button>
+      </div>
+      <div class="summary" id="btMilestone">距离下次自动驯化：—</div>
+      <div class="milestone-bar"><div id="btMilestoneFill" style="width:0%"></div></div>
+    </div>
+
+    <div class="bt-card">
+      <h3 style="margin:0 0 8px;color:#f0c040">总体回测</h3>
+      <div class="bt-grid" id="btOverallGrid"></div>
+    </div>
+
+    <div class="bt-card">
+      <h3 style="margin:0 0 8px;color:#f0c040">信号来源 source_stats</h3>
+      <div id="btSourceList"><div class="bt-row" style="color:#666">点上方「立即回测」开始</div></div>
+    </div>
+    <div class="bt-card">
+      <h3 style="margin:0 0 8px;color:#f0c040">体制 regime_stats</h3>
+      <div id="btRegimeList"><div class="bt-row" style="color:#666">—</div></div>
+    </div>
+    <div class="bt-card">
+      <h3 style="margin:0 0 8px;color:#f0c040">可预测分 pred_stats</h3>
+      <div id="btPredList"><div class="bt-row" style="color:#666">—</div></div>
+    </div>
+    <div class="bt-card">
+      <h3 style="margin:0 0 8px;color:#f0c040">Monolith mono_stats</h3>
+      <div id="btMonoList"><div class="bt-row" style="color:#666">—</div></div>
+    </div>
+
+    <div class="bt-card">
+      <h3 style="margin:0 0 8px;color:#f0c040">驯化历史</h3>
+      <div class="actions">
+        <button class="btn btn-gray" id="reloadRunsBtn">刷新</button>
+        <a class="btn btn-blue" href="/admin/api/export_bp_training" target="_blank">⬇️ 全靴 BP TXT</a>
+        <a class="btn btn-blue" href="/admin/api/export_bp_tsv" target="_blank">⬇️ TSV</a>
+      </div>
+      <div id="runsList"></div>
+    </div>
+
+    <div class="bt-card">
+      <h3 style="margin:0 0 8px;color:#f0c040">报告（可复制给 AI）</h3>
+      <div class="actions">
+        <button class="btn btn-gray" id="copyReportBtn">📋 一键复制</button>
+        <a class="btn btn-blue" id="dlReportBtn" href="#">⬇️ 下载报告 TXT</a>
+      </div>
+      <pre id="bt-report">点上方「立即回测」生成报告。</pre>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+var cur = null;
+
+function g(id) { return document.getElementById(id); }
+function showLogin() { g("loginPage").style.display = ""; g("mainPage").style.display = "none"; }
+function showMain() { g("loginPage").style.display = "none"; g("mainPage").style.display = ""; loadOverview(); }
+function msg(t) {
+  var el = g("msgBar");
+  el.textContent = t;
+  el.style.display = "";
+  setTimeout(function () { el.style.display = "none"; }, 3000);
+}
+
+function api(method, path, body, cb) {
+  var xhr = new XMLHttpRequest();
+  xhr.open(method, path, true);
+  xhr.withCredentials = true;
+  if (body) xhr.setRequestHeader("Content-Type", "application/json");
+  xhr.onreadystatechange = function () {
+    if (xhr.readyState !== 4) return;
+    if (xhr.status === 401) { showLogin(); cb && cb(null); return; }
+    var data = null;
+    try { data = JSON.parse(xhr.responseText); }
+    catch (e) { data = { error: "解析失败：" + xhr.responseText.substring(0, 200) }; }
+    cb && cb(data, xhr.status);
+  };
+  xhr.onerror = function () { cb && cb({ error: "网络错误" }); };
+  xhr.send(body ? JSON.stringify(body) : null);
+}
+
+g("loginBtn").onclick = function () {
+  var pwd = g("pwdInput").value;
+  if (!pwd) { g("loginErr").textContent = "请输入密码"; return; }
+  api("POST", "/admin/login", { password: pwd }, function (d, s) {
+    if (s === 200) showMain();
+    else g("loginErr").textContent = (d && d.detail) || "密码错误或失败次数过多";
+  });
+};
+g("pwdInput").onkeydown = function (e) { if (e.key === "Enter") g("loginBtn").click(); };
+g("logoutBtn").onclick = function () {
+  api("POST", "/admin/logout", null, function () { showLogin(); });
+};
+g("unlockAllBtn").onclick = function () {
+  if (!confirm("确定一键解锁全部桌台？")) return;
+  api("POST", "/admin/api/unlock_all", null, function (r, s) {
+    if (s === 200 && r.ok) { msg("已解锁：" + (r.cleared.join(",") || "无")); loadOverview(); }
+  });
+};
+
+function fmtTime(ts) {
+  if (!ts) return "无";
+  var d = new Date(ts * 1000);
+  return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
+
+function loadOverview() {
+  api("GET", "/admin/api/overview", null, function (d, s) {
+    if (!d) return;
+    if (s !== 200 || d.error) {
+      g("cards").innerHTML = '<div class="err">读取桌台总览失败：' + (d.error || "未知") +
+        (d.trace ? "\n" + d.trace : "") + "</div>";
+      return;
+    }
+    var c = g("cards");
+    c.innerHTML = "";
+    d.tables.forEach(function (t) {
+      var pc = t.today_pnl > 0 ? "pos" : t.today_pnl < 0 ? "neg" : "zero";
+      var ps = t.today_pnl > 0 ? "+" : "";
+      var div = document.createElement("div");
+      div.className = "card" + (t.locked ? " locked" : "") + (cur === t.table_id ? " active" : "");
+      div.setAttribute("data-tid", t.table_id);
+      div.innerHTML =
+        '<h3>' + t.table_id + ' ' +
+        (t.locked
+          ? '<span class="lock-badge">🔒 已锁</span>'
+          : '<span class="live-dot">🟢 在线</span>') + '</h3>' +
+        '<div class="stat">今日 ' + t.today_hands + ' 手</div>' +
+        '<div class="stat">累计 ' + t.total_hands + ' 手</div>' +
+        '<div class="stat">活跃 ' + fmtTime(t.last_active) + '</div>' +
+        '<div class="pnl ' + pc + '">' + ps + t.today_pnl + '</div>';
+      div.onclick = function () { loadTable(this.getAttribute("data-tid")); };
+      c.appendChild(div);
+    });
+    if (cur) loadTable(cur, true);
+  });
+}
+
+function loadTable(tid, silent) {
+  cur = tid;
+  var all = document.querySelectorAll(".card");
+  for (var i = 0; i < all.length; i++) {
+    all[i].classList.toggle("active", all[i].getAttribute("data-tid") === tid);
+  }
+  var det = g("detail");
+  det.style.display = "";
+  if (!silent) det.innerHTML = '<div style="padding:30px;text-align:center;color:#666">加载 ' + tid + ' 中...</div>';
+  api("GET", "/admin/api/table/" + tid, null, function (d, s) {
+    if (!d) { det.innerHTML = '<div class="err">请求失败</div>'; return; }
+    if (s !== 200 || d.error) {
+      det.innerHTML = '<div class="err">API错误 (HTTP ' + s + ')：\n' +
+        (d.error || "未知") + (d.trace ? "\n\n" + d.trace : "") + "</div>";
+      return;
+    }
+    var road = "";
+    for (var i = d.hands.length - 1; i >= 0; i--) {
+      var o = d.hands[i].outcome;
+      road += o === "B" ? "🔴" : o === "P" ? "🔵" : o === "T" ? "🟢" : "⚪";
+    }
+    var rows = "";
+    for (var j = 0; j < Math.min(d.hands.length, 30); j++) {
+      var h = d.hands[j];
+      var pc = h.pnl > 0 ? "#2ecc71" : h.pnl < 0 ? "#e74c3c" : "#888";
+      var ps = h.pnl > 0 ? "+" : "";
+      rows += '<tr><td>' + fmtTime(h.ts) + '</td>' +
+        '<td class="o' + h.outcome + '">' + (h.outcome || "·") + '</td>' +
+        '<td style="color:#888">' + (h.decision || "-") + '</td>' +
+        '<td>' + (h.bet_side || "-") + '</td>' +
+        '<td style="color:' + pc + '">' + ps + h.pnl + '</td>' +
+        '<td style="color:#666">' + h.p_cal + '</td>' +
+        '<td style="color:#888">' + (h.regime || "-") + '</td></tr>';
+    }
+    var lockBtn = d.locked
+      ? '<button class="btn btn-green" id="lockBtn">🔓 解锁该桌</button>'
+      : '<button class="btn btn-red" id="lockBtn">🔒 锁定该桌</button>';
+    det.innerHTML =
+      '<h2><span>' + tid + ' 详情（' + d.hands.length + ' 手）' +
+      (d.locked ? ' <span class="lock-badge">已锁定</span>' : '') + '</span>' +
+      '<button class="btn btn-gray" id="closeBtn">关闭</button></h2>' +
+      '<div class="actions">' + lockBtn +
+      '<a href="/admin/api/export/' + tid + '" class="btn btn-blue">📥 下载今日 CSV</a></div>' +
+      '<div class="summary">大路 · 🔴 庄 🔵 闲 🟢 和（左旧右新）</div>' +
+      '<div class="road">' + (road || '<span style="color:#555;font-size:13px">暂无数据</span>') + '</div>' +
+      '<table class="ht"><thead><tr>' +
+      '<th>时间</th><th>结果</th><th>决策</th><th>下注</th><th>盈亏</th><th>概率</th><th>体制</th>' +
+      '</tr></thead><tbody>' +
+      (rows || '<tr><td colspan="7" style="text-align:center;color:#666;padding:18px">暂无数据</td></tr>') +
+      '</tbody></table>';
+    g("closeBtn").onclick = function () {
+      det.style.display = "none";
+      cur = null;
+      var a = document.querySelectorAll(".card");
+      for (var k = 0; k < a.length; k++) a[k].classList.remove("active");
+    };
+    g("lockBtn").onclick = function () {
+      var act = d.locked ? "unlock" : "lock";
+      api("POST", "/admin/api/" + act + "/" + tid, null, function (r, s2) {
+        if (s2 === 200 && r && r.ok) {
+          msg((d.locked ? "🔓 已解锁 " : "🔒 已锁定 ") + tid);
+          loadOverview();
+        }
+      });
+    };
+  });
+}
+
+// ── 回测 / 驯化 tab ─────────────────────────────────────────────────────────
+var BT_LAST = null;
+
+function showTab(name) {
+  g("tab-overview").style.display = (name === "overview") ? "" : "none";
+  g("tab-backtest").style.display = (name === "backtest") ? "" : "none";
+  g("tabOverviewBtn").classList.toggle("on", name === "overview");
+  g("tabBacktestBtn").classList.toggle("on", name === "backtest");
+  if (name === "backtest" && !BT_LAST) {
+    runBacktest();
+    loadRuns();
+  }
+}
+
+function runBacktest() {
+  var tid = g("btTable").value;
+  var url = "/admin/api/backtest" + (tid ? "?table_id=" + encodeURIComponent(tid) : "");
+  api("GET", url, null, function (d, s) {
+    if (s !== 200 || !d || !d.overall) { msg("回测失败"); return; }
+    BT_LAST = d;
+    renderOverall(d.overall);
+    renderGroup("btSourceList", d.source_stats);
+    renderGroup("btRegimeList", d.regime_stats);
+    renderGroup("btPredList", d.pred_stats);
+    renderGroup("btMonoList", d.mono_stats);
+    renderReport(d);
+    renderMilestone(d.overall.shoes);
+    msg("回测完成");
+  });
+}
+
+function renderOverall(o) {
+  var fields = [
+    ["靴", o.shoes], ["手", o.hands_total], ["注", o.bets],
+    ["胜", o.wins], ["负", o.losses], ["胜率", (o.win_rate * 100).toFixed(2) + "%"],
+    ["Wilson 95%", "[" + o.wilson_lower + ", " + o.wilson_upper + "]"],
+    ["总 PnL", o.pnl], ["每靴 PnL", o.pnl_per_shoe],
+    ["每靴下注", o.bets_per_shoe], ["下注率", (o.bet_rate * 100).toFixed(2) + "%"],
+    ["最大回撤", o.max_drawdown],
+  ];
+  g("btOverallGrid").innerHTML = fields.map(function (kv) {
+    return '<div class="item"><div class="k">' + kv[0] + '</div><div class="v">' + kv[1] + '</div></div>';
+  }).join("");
+}
+
+function renderGroup(id, list) {
+  if (!list || !list.length) {
+    g(id).innerHTML = '<div class="bt-row" style="color:#666">无数据</div>';
+    return;
+  }
+  g(id).innerHTML = list.map(function (it) {
+    var cls = it.pnl > 0 ? "pos" : (it.pnl < 0 ? "neg" : "zero");
+    return '<div class="bt-row"><span class="k">' + it.label + '</span>' +
+      '<span class="v ' + cls + '">bets=' + it.bets + ' wins=' + it.wins +
+      ' wr=' + it.wr.toFixed(4) + ' pnl=' + it.pnl.toFixed(2) + ' ' + it.verdict + '</span></div>';
+  }).join("");
+}
+
+function renderReport(d) {
+  var o = d.overall;
+  var bar = "============================================================";
+  var sep = "------------------------------------------------------------";
+  var lines = [bar, "BASE_CONFIG 回测结果", bar,
+    "靴:" + o.shoes + " 手:" + o.hands_total + " 注:" + o.bets +
+      " 胜:" + o.wins + " 负:" + o.losses,
+    "胜率:" + o.win_rate.toFixed(4) + "  Wilson下界:" + o.wilson_lower.toFixed(4) +
+      "  Wilson上界:" + o.wilson_upper.toFixed(4),
+    "总PnL:" + o.pnl + "  每靴PnL:" + o.pnl_per_shoe + "  每靴下注:" + o.bets_per_shoe +
+      "  下注率:" + o.bet_rate.toFixed(4) + "  最大回撤:" + o.max_drawdown,
+    ""];
+  function gp(name, list) {
+    var out = [sep, name, sep];
+    if (!list.length) { out.push("  (空)"); out.push(""); return out; }
+    list.forEach(function (it) {
+      out.push(it.label + "    bets=" + it.bets + " wins=" + it.wins);
+      out.push("  wr=" + it.wr.toFixed(4) + "  pnl=" + it.pnl.toFixed(2) + "    " + it.verdict);
+    });
+    out.push(""); return out;
+  }
+  lines = lines.concat(gp("信号来源 source_stats", d.source_stats));
+  lines = lines.concat(gp("体制 regime_stats", d.regime_stats));
+  lines = lines.concat(gp("可预测分 pred_stats", d.pred_stats));
+  lines = lines.concat(gp("Monolith mono_stats", d.mono_stats));
+  lines.push(bar);
+  g("bt-report").textContent = lines.join("\n");
+}
+
+function renderMilestone(shoes) {
+  var milestones = [10, 30, 50, 100, 200, 500, 1000];
+  var next = milestones.find(function (m) { return m > shoes; }) || (shoes + 1000);
+  var prev = 0;
+  for (var i = milestones.length - 1; i >= 0; i--) {
+    if (milestones[i] <= shoes) { prev = milestones[i]; break; }
+  }
+  var pct = (shoes - prev) / Math.max(1, next - prev) * 100;
+  g("btMilestone").textContent = "总靴数 " + shoes + " · 距离下次自动驯化 " +
+    Math.max(0, next - shoes) + " 靴（" + next + " 触发）";
+  g("btMilestoneFill").style.width = Math.min(100, Math.max(0, pct)) + "%";
+}
+
+function loadRuns() {
+  api("GET", "/admin/api/training_runs?limit=20", null, function (d) {
+    if (!d || !d.runs) return;
+    var html = '<table class="runs-tbl"><thead><tr>' +
+      '<th>ID</th><th>时间</th><th>触发</th><th>靴</th><th>注</th><th>胜率</th><th>PnL</th><th>桌</th>' +
+      '</tr></thead><tbody>';
+    d.runs.forEach(function (r) {
+      var o = r.overall || {};
+      var t = new Date(r.ts * 1000).toLocaleString("zh-CN", { hour12: false });
+      html += '<tr><td>' + r.id + '</td><td>' + t + '</td><td>' + r.trigger +
+        '</td><td>' + r.shoe_count + '</td><td>' + (o.bets || 0) +
+        '</td><td>' + ((o.win_rate || 0) * 100).toFixed(1) + '%</td><td>' +
+        (o.pnl || 0) + '</td><td>' + (r.table_id || "全部") + '</td></tr>';
+    });
+    if (!d.runs.length) html += '<tr><td colspan="8" style="text-align:center;color:#666;padding:14px">无驯化记录</td></tr>';
+    html += '</tbody></table>';
+    g("runsList").innerHTML = html;
+  });
+}
+
+g("runBtBtn").onclick = runBacktest;
+g("reloadRunsBtn").onclick = loadRuns;
+
+g("dlBundleBtn").onclick = function () {
+  var tid = g("btTable").value;
+  var url = "/admin/api/training_bundle" + (tid ? "?table_id=" + encodeURIComponent(tid) : "");
+  window.location.href = url;
+};
+
+g("dlReportBtn").onclick = function (ev) {
+  ev.preventDefault();
+  var tid = g("btTable").value;
+  window.location.href = "/admin/api/backtest/report" + (tid ? "?table_id=" + encodeURIComponent(tid) : "");
+};
+
+g("copyReportBtn").onclick = function () {
+  var txt = g("bt-report").textContent;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(function () { msg("已复制到剪贴板"); });
+  } else {
+    var ta = document.createElement("textarea");
+    ta.value = txt; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); msg("已复制"); } catch (e) { msg("复制失败"); }
+    document.body.removeChild(ta);
+  }
+};
+
+g("saveRunBtn").onclick = function () {
+  var tid = g("btTable").value || null;
+  api("POST", "/admin/api/training_run", { table_id: tid }, function (r, s) {
+    if (s === 200 && r && r.ok) { msg("已存档 #" + r.run_id); loadRuns(); }
+    else msg("存档失败");
+  });
+};
+
+setInterval(function () {
+  if (g("mainPage").style.display !== "none" && !cur &&
+      g("tab-overview").style.display !== "none") loadOverview();
+}, 30000);
+
+api("GET", "/admin/api/overview", null, function (d, s) {
+  if (d && s === 200) showMain();
+  else showLogin();
+});
+</script>
+</body></html>

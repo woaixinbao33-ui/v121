@@ -22,8 +22,9 @@
   #dec { background:#15152a; border-radius:10px; padding:14px; text-align:center;
          font-size:20px; margin:10px 0; color:#00ff88; min-height:96px;
          white-space:pre-wrap; line-height:1.4 }
-  #seq, #log { background:#111; border-radius:8px; padding:8px; margin:8px 0;
+  #seq, #log, #apex { background:#111; border-radius:8px; padding:8px; margin:8px 0;
                word-break:break-all; font-size:13px; max-height:160px; overflow-y:auto }
+  #apex { color:#9cdcfe }
   #login { background:#15152a; padding:14px; border-radius:8px }
   #login p { font-size:13px; color:#aaa; margin:4px 0 }
   .hide { display:none !important }
@@ -74,7 +75,13 @@
     <button class="y" onclick="report()">报告</button>
   </div>
 
+  <div class="row">
+    <button class="g" onclick="window.open('/console','_blank')">调参控制台</button>
+    <button class="y" onclick="window.open('/admin','_blank')">管理后台</button>
+  </div>
+
   <div id="seq">序列：</div>
+  <div id="apex" class="hide">APEX 状态：</div>
   <div id="log">就绪</div>
 </div>
 
@@ -144,6 +151,22 @@ function logout() {
   location.reload();
 }
 
+var MODE_ZH = {
+  COLLECTING:"积累中", FREEZE:"冻结中", FROZEN:"冻结中",
+  STOP_LOSS:"止损暂停", PRED_MODE_BLOCK:"LOW_ONLY 拦截",
+  MONO_BLOCK:"MONO 反向拦截", DMR_BLOCK:"DMR 冲突拦截",
+  LOW_SCORE:"评分不足", NORMAL:"无信号", EXPLORE:"探索期·小注",
+  PREDICT:"高置信预测", SMALL_BET:"小注填充",
+  DMR_OVERRIDE:"DMR 反向覆盖", DRIFT_BLOCK:"分布漂移拦截",
+  META_FREEZE:"元决策冻结", META_WAIT:"元决策观望",
+  RISK_HALT:"风险治理熔断", PRUNED:"修剪态"
+};
+var REGIME_ZH = {TREND_B:"趋庄", TREND_P:"趋闲", OSC:"震荡", CHAOS:"混沌", MIXED:"混合"};
+var MONO_ZH = {MONO_SAME:"同向加权", MONO_OPPOSITE:"反向拦截", MONO_INACTIVE:"未激活"};
+var DMR_ZH = {NONE:"无", FOLLOW_TREND:"跟趋势", REVERSE:"反转"};
+
+function zh(map, k) { return (k && map[k]) ? map[k] : (k || "-"); }
+
 function show(r) {
   if (!r) return;
   if (r.detail) { lg("错误 " + r.detail); return; }
@@ -161,17 +184,42 @@ function show(r) {
     var sideLabel = (side === "B") ? "庄 B" : "闲 P";
     txt = label + " → " + sideLabel + "  注 " + bet;
   } else {
-    if (mode === "COLLECTING") txt = "积累中 " + msg;
-    else if (mode === "FREEZE") txt = "冻结中 " + msg;
-    else if (mode === "PRED_MODE_BLOCK") txt = "LOW_ONLY 拦截";
-    else if (mode === "MONO_BLOCK") txt = "MONO 拦截";
-    else if (mode === "STOP_LOSS") txt = "止损暂停";
+    txt = zh(MODE_ZH, mode) + (msg ? " · " + msg : "");
   }
 
   lastDecisionId = r.decision_id || null;
   $("dec").innerText = txt + "\n" + mode + "  分 " + score + "  靴盈亏 " + pnl
     + (lastDecisionId ? "\nID " + lastDecisionId.slice(0, 8) : "");
-  lg(d + " " + side + " " + mode + " " + msg);
+
+  // APEX 详情面板 — 仅 apex_enabled 时显示
+  if (r.apex_enabled) {
+    var lines = [];
+    lines.push("体制 " + zh(REGIME_ZH, r.regime) +
+      "  置信 " + (r.regime_confidence != null ? r.regime_confidence : "-") +
+      "  转移 " + (r.transition_risk != null ? r.transition_risk : "-"));
+    lines.push("L85A " + (r.predictability_label || "-") +
+      " (" + (r.predictability_score != null ? r.predictability_score : "-") + ")" +
+      "  pred_score " + (r.pred_score != null ? Number(r.pred_score).toFixed(3) : "-"));
+    lines.push("MONO " + zh(MONO_ZH, r.mono_state) +
+      "  DMR " + zh(DMR_ZH, r.dmr_action) +
+      "  KEP×" + (r.kep_units != null ? r.kep_units : "1") +
+      "  风控 " + (r.risk_coeff != null ? r.risk_coeff : "1"));
+    if (r.drift_level && r.drift_level !== "OK") {
+      lines.push("漂移 " + r.drift_level + " PSI=" + (r.drift_psi || 0));
+    }
+    if (r.meta_gate && r.meta_gate !== "PASS_LOW") {
+      lines.push("元决策 " + r.meta_gate + " 综合=" + (r.meta_composite || 0));
+    }
+    if (r.risk_governor_reason) {
+      lines.push("治理 " + r.risk_governor_reason);
+    }
+    $("apex").innerText = "APEX_PRO:\n" + lines.join("\n");
+    $("apex").classList.remove("hide");
+  } else {
+    $("apex").classList.add("hide");
+  }
+
+  lg(d + " " + side + " " + zh(MODE_ZH, mode) + " " + msg);
 }
 
 function rec(o) {
