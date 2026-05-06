@@ -4,12 +4,14 @@
 > **不保证盈利**：B/P 序列在统计上接近独立同分布，没有任何阈值组合能稳定战胜庄家边际。任何 APEX 模块（L85A 可预测性、Monolith DMR/KEP、Qimen 体制治理）都不会改变这个数学事实，它们只重新分配胜率方差。
 > 部署前请确认你处于允许的合规场景。
 
-## 升级说明（V121_CLOUD_2 → V121_CLOUD_APEX_3）
+## 升级说明（V121_CLOUD_2 → V121_CLOUD_APEX_PRO_4）
 
-- 默认行为与 `V121_CLOUD_2` 完全一致：所有 APEX 模块的开关默认 `false`。
-- 升级**无需迁移数据库**：APEX 衍生指标（predictability_label / dmr_action / kep_units / risk_coeff / regime_confidence）随 decide() 响应返回，hands 表沿用旧 schema。
+- 默认行为与 `V121_CLOUD_2` 完全一致：所有 APEX / APEX_PRO 模块的开关默认 `false`。
+- 升级**无需迁移数据库**：APEX 衍生指标（predictability_label / dmr_action / kep_units / risk_coeff / regime_confidence / drift_level / meta_gate / risk_governor_reason）随 decide() 响应返回，hands 表沿用旧 schema。
 - `/ai/tune` 现在会**持久化**到 `table_state(__config__)`，重启后保留。要彻底回滚到字面默认，运行 `POST /ai/config/reset` 然后 `systemctl restart v121`。
-- 新增 `console.html` —— 调参控制台，建议放在与 terminal 同一目录。
+- 新增三套静态页：`terminal.html`（5 台手机录入）、`console.html`（调参控制台）、`admin.html`（管理后台 / 锁桌 / CSV 导出），全部部署在 `/opt/v121/` 同目录。
+- 新增 `admin.py` 模块：管理员密码登录 + cookie 会话 + 5 桌锁定 + CSV 导出 + 一键解锁应急路由。
+- 服务端所有 message 已全中文化，前端模式名也有完整翻译表，UI 不再出现裸英文 mode。
 
 ## 0. 你需要的东西
 
@@ -37,8 +39,10 @@ sudo chown -R v121:v121 /opt/v121
 ```bash
 sudo -u v121 git clone https://github.com/woaixinbao33-ui/v121.git /opt/v121/src
 sudo -u v121 cp /opt/v121/src/server.py        /opt/v121/server.py
+sudo -u v121 cp /opt/v121/src/admin.py         /opt/v121/admin.py
 sudo -u v121 cp /opt/v121/src/terminal.html    /opt/v121/terminal.html
 sudo -u v121 cp /opt/v121/src/console.html     /opt/v121/console.html
+sudo -u v121 cp /opt/v121/src/admin.html       /opt/v121/admin.html
 sudo -u v121 cp /opt/v121/src/requirements.txt /opt/v121/requirements.txt
 ```
 
@@ -56,14 +60,18 @@ sudo -u v121 /opt/v121/.venv/bin/pip install -r /opt/v121/requirements.txt
 sudo install -m 600 -o root -g root /dev/null /etc/v121.env
 sudo tee /etc/v121.env > /dev/null <<EOF
 V121_API_KEY=$(openssl rand -hex 24)
+V121_ADMIN_PASSWORD=$(openssl rand -hex 6)
 V121_DB_PATH=/opt/v121/v121.db
 V121_TERMINAL_HTML=/opt/v121/terminal.html
 V121_CONSOLE_HTML=/opt/v121/console.html
+V121_ADMIN_HTML=/opt/v121/admin.html
 V121_HOST=127.0.0.1
 V121_PORT=8000
 V121_BANKER_COMMISSION=0.05
 EOF
 ```
+
+`V121_API_KEY` 是手机端 / 调参控制台用的；`V121_ADMIN_PASSWORD` 是管理后台用的，两把钥匙独立。两者都至少 6 位，**密码不再有任何默认值，没配置就启动失败**（这是故意的）。
 
 把生成的 `V121_API_KEY` 抄到本机安全的密码管理器里，**这是手机端登录用的 key**。
 
@@ -202,15 +210,104 @@ sudo systemctl restart v121
 | `/ai/shoes` | GET | X-API-Key | 最近 50 靴 |
 | `/ai/export_shoes` | GET | X-API-Key | 全靴 id.序列 文本导出 |
 
-## 12. APEX 模块概览（决策链路）
+## 12. 管理后台 `/admin`
+
+URL：
+
+```
+https://v121.example.com/admin
+```
+
+输入第 4 步生成的 `V121_ADMIN_PASSWORD`，登录后看到 5 桌总览：今日手数、今日盈亏、活跃时间、锁状态。
+
+可用操作：
+
+- **锁定**：写入操作（`/v100/outcome` / `/v100/settle`）会立即返回 HTTP 423，前端显示「桌台已被管理员锁定」。
+- **解锁**：恢复写入。
+- **一键解锁全部**：右上角红色按钮，避免 5 桌都被锁导致管理员自锁。
+- **下载今日 CSV**：导出该桌全部 hands（带 BOM 的 UTF-8，Excel 直接打开中文不乱码）。
+
+安全：
+
+- 密码错误连续 5 次（同 IP，5 分钟窗口）会返回 429。
+- 会话 8 小时过期，cookie 是 `httponly + samesite=lax`。
+- 应急路由 `POST /admin/api/unlock_all` 用同一 cookie 即可调用。
+
+## 13. APEX_PRO 渐进开启指南
+
+新模块**全部默认关闭**。开启顺序建议：
+
+1. `apex_enabled` → 开总开关，先观察终端 APEX 面板里的 regime / pred_score / mono_state。
+2. `pro_drift_enabled` → 漂移监控（PSI），WARN 不影响下注，BLOCK 才静默。
+3. `pro_calibration_enabled` → 不影响下注，仅用于 `/ai/calibration` 自检页。
+4. `l85a_enabled` → L85A 评分加权进 score，weight 从 0.1 起步。
+5. `qimen_enabled` → 注码风险系数，CHAOS 自动缩 0.6。
+6. `pro_meta_enabled` → 元决策闸门，开后会增加 META_WAIT/META_FREEZE 拒签。
+7. `pro_tau_dynamic_enabled` → 漂移/回撤会自动放宽 tau，候选窗口减少。
+8. `pro_risk_governor_enabled` → 单靴 / 单日 / 连错三段封顶。
+9. **最后**才考虑 `monolith_enabled` + `dmr_enabled`，且 `dmr_conflict_action` 留 `BLOCK`。`FOLLOW_DMR` 会反向覆盖 V121 方向，方差极大，仅供回测。
+10. `kep_enabled` 默认 `kep_max_multiplier=1.0` 等于关闭，调到 1.5 才会真正放大注码。
+
+每加一个 flag，建议跑至少 3 靴观察 PnL 与 hands 表，再决定是否保留。
+
+## 14. 小白零基础：把代码推到 GitHub
+
+### 一次性准备工作
+
+1. 注册 GitHub 账号 → https://github.com/join
+2. 在 https://github.com/woaixinbao33-ui/v121 打开你的仓库（已经存在）
+3. 右上角 头像 → **Settings** → **Developer settings** → **Personal access tokens (classic)** → **Generate new token (classic)**
+   - Note 写：`v121-push`
+   - Expiration 选 90 days
+   - 勾 `repo` 一项即可
+   - 点 Generate，**复制保存**这串 `ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`（只显示一次！）
+
+4. 在你电脑（Mac/Linux/WSL）打开终端，配置 git：
+   ```bash
+   sudo apt install -y git           # 没有 git 才需要
+   git config --global user.name  "你的GitHub用户名"
+   git config --global user.email "你的GitHub邮箱"
+   ```
+
+### 拿到本仓库代码
+
+```bash
+cd ~
+git clone https://github.com/woaixinbao33-ui/v121.git
+cd v121
+git checkout claude/integrate-apex-engine-A4hGR   # 切到本次升级分支
+```
+
+### 推送（首次会让你输用户名 / token）
+
+```bash
+git push -u origin claude/integrate-apex-engine-A4hGR
+# Username: 你的GitHub用户名
+# Password: 粘贴 ghp_xxx 那串（不是 GitHub 登录密码！）
+```
+
+### 在 GitHub 找你的代码
+
+仓库地址 → **https://github.com/woaixinbao33-ui/v121**
+
+- `main` 分支 = 旧版本（V121_CLOUD_2）
+- `claude/integrate-apex-engine-A4hGR` 分支 = 本次升级（V121_CLOUD_APEX_PRO_4 + 管理后台）
+
+每个文件点进去都能看到「最近一次提交说明 + 行号 + 复制按钮」。
+
+推送成功后浏览器顶部会自动弹出 "Compare & pull request"，点击直接建 PR；如果没弹，自己点 **Pull requests** → **New pull request**，base 选 `main`、compare 选这条分支，标题/描述写改了什么，提交即可。
+
+## 15. APEX_PRO 模块概览（决策链路）
 
 ```
 record outcome → decide()
   ├─ phase_of(bp_hand_no)            → EXPLORE / ANALYZE / HARVEST
   ├─ calc_bias(seq[-20])
   ├─ calc_regime(seq[-18])           → TREND_B/P / OSC / CHAOS / MIXED
-  ├─ regime_metrics(seq, regime)     [APEX] → confidence, transition_risk
+  ├─ regime_metrics(seq, regime)     [APEX]      → confidence, transition_risk
+  ├─ pro_drift_check(seq)            [APEX_PRO]  → OK/WARN/BLOCK + PSI
   ├─ freeze / stop_loss / collect_min governance
+  ├─ pro_dynamic_tau(state, psi)     [APEX_PRO]  → 自适应 tau_lo/hi
   ├─ calc_pred(seq[-24])             → p_cal, pred_score
   ├─ V121 信号                       → side, confidence, source
   ├─ l85a_predictability(...)        [APEX·L85A] → 0..1 + 标签
@@ -218,9 +315,25 @@ record outcome → decide()
   ├─ MONO_OPPOSITE block
   ├─ pred_mode LOW_ONLY block
   ├─ score_calc(...)                 + L85A 加权
-  ├─ dmr_advise(...)                 [APEX·DMR] → BLOCK 或覆盖 side
-  ├─ kep_units(...)                  [APEX·KEP] → 注码×倍数
-  └─ qimen_risk_coeff(...)           [APEX·Qimen] → 注码×风险系数
+  ├─ dmr_advise(...)                 [APEX·DMR]  → BLOCK 或覆盖 side
+  ├─ kep_units(...)                  [APEX·KEP]  → 注码×倍数
+  ├─ qimen_risk_coeff(...)           [APEX·Qimen]→ 注码×风险系数
+  ├─ pro_meta_gate(features)         [APEX_PRO]  → PASS_HIGH/LOW/WAIT/FREEZE
+  └─ pro_risk_governor(state, bet)   [APEX_PRO]  → Kelly/单靴/连错封顶
 ```
 
-每个 APEX 步骤独立 flag，关闭即等同于直通透传。
+每个 APEX / APEX_PRO 步骤独立 flag，关闭即等同于直通透传。
+
+## 16. 全部环境变量
+
+| 变量 | 必填 | 默认 | 说明 |
+|---|---|---|---|
+| `V121_API_KEY` | ✅ | — | 手机端 / 调参控制台 X-API-Key |
+| `V121_ADMIN_PASSWORD` | ✅ | — | 管理后台密码（≥6 位）|
+| `V121_DB_PATH` |  | `/opt/v121/v121.db` | SQLite 文件路径 |
+| `V121_TERMINAL_HTML` |  | `/opt/v121/terminal.html` | 手机端静态页 |
+| `V121_CONSOLE_HTML` |  | `/opt/v121/console.html` | 调参控制台静态页 |
+| `V121_ADMIN_HTML` |  | `/opt/v121/admin.html` | 管理后台静态页 |
+| `V121_BANKER_COMMISSION` |  | `0.05` | 庄家佣金（5%）|
+| `V121_HOST` |  | `127.0.0.1` | uvicorn 监听地址 |
+| `V121_PORT` |  | `8000` | uvicorn 端口 |

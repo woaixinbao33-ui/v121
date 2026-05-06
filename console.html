@@ -72,6 +72,7 @@
     <button class="g" onclick="loadConfig()">读取</button>
     <button class="y" onclick="saveConfig()">保存到云</button>
     <button class="n" onclick="window.location.href='/terminal'">手机端</button>
+    <button class="b" onclick="window.open('/admin','_blank')">管理后台</button>
     <button class="l" onclick="logout()">登出</button>
   </div>
 
@@ -125,7 +126,46 @@
     </div>
     <div class="row"><label>kep_max_multiplier</label><input type="number" step="0.1" data-key="kep_max_multiplier"></div>
 
-    <p class="danger">⚠ 不变量：tau_lo &lt; tau_hi、small_fill_lo &lt; small_fill_hi、score_small ≤ score_full、base_bet ≤ max_bet、phase1 ≤ phase2。提交不满足约束的组合会返回 400。</p>
+    <h3>APEX_PRO 总开关</h3>
+    <div class="row"><label>pro_drift_enabled</label><div class="toggle" data-key="pro_drift_enabled" onclick="tog(this)"></div></div>
+    <div class="row"><label>pro_calibration_enabled</label><div class="toggle" data-key="pro_calibration_enabled" onclick="tog(this)"></div></div>
+    <div class="row"><label>pro_meta_enabled</label><div class="toggle" data-key="pro_meta_enabled" onclick="tog(this)"></div></div>
+    <div class="row"><label>pro_tau_dynamic_enabled</label><div class="toggle" data-key="pro_tau_dynamic_enabled" onclick="tog(this)"></div></div>
+    <div class="row"><label>pro_risk_governor_enabled</label><div class="toggle" data-key="pro_risk_governor_enabled" onclick="tog(this)"></div></div>
+
+    <h3>APEX_PRO 漂移检测</h3>
+    <div class="row"><label>pro_psi_warn</label><input type="number" step="0.01" data-key="pro_psi_warn"></div>
+    <div class="row"><label>pro_psi_block</label><input type="number" step="0.01" data-key="pro_psi_block"></div>
+    <div class="row"><label>pro_drift_window</label><input type="number" step="5" data-key="pro_drift_window"></div>
+
+    <h3>APEX_PRO 概率校准</h3>
+    <div class="row"><label>pro_brier_max</label><input type="number" step="0.005" data-key="pro_brier_max"></div>
+    <div class="row"><label>pro_ece_max</label><input type="number" step="0.005" data-key="pro_ece_max"></div>
+    <div class="row"><label>pro_calibration_window</label><input type="number" step="10" data-key="pro_calibration_window"></div>
+
+    <h3>APEX_PRO 元决策</h3>
+    <div class="row"><label>pro_model_disagree_warn</label><input type="number" step="0.01" data-key="pro_model_disagree_warn"></div>
+    <div class="row"><label>pro_model_disagree_block</label><input type="number" step="0.01" data-key="pro_model_disagree_block"></div>
+
+    <h3>APEX_PRO 自适应 tau</h3>
+    <div class="row"><label>pro_base_edge</label><input type="number" step="0.005" data-key="pro_base_edge"></div>
+    <div class="row"><label>pro_tau_hi_min</label><input type="number" step="0.005" data-key="pro_tau_hi_min"></div>
+    <div class="row"><label>pro_tau_hi_max</label><input type="number" step="0.005" data-key="pro_tau_hi_max"></div>
+
+    <h3>APEX_PRO 风险治理</h3>
+    <div class="row"><label>pro_kelly_fraction</label><input type="number" step="0.05" data-key="pro_kelly_fraction"></div>
+    <div class="row"><label>pro_max_shoe_risk</label><input type="number" step="0.5" data-key="pro_max_shoe_risk"></div>
+    <div class="row"><label>pro_max_daily_risk</label><input type="number" step="0.5" data-key="pro_max_daily_risk"></div>
+    <div class="row"><label>pro_loss_2_freeze</label><input type="number" step="1" data-key="pro_loss_2_freeze"></div>
+    <div class="row"><label>pro_loss_3_freeze</label><input type="number" step="1" data-key="pro_loss_3_freeze"></div>
+
+    <h3>APEX_PRO 评分阈值</h3>
+    <div class="row"><label>pro_score_high</label><input type="number" step="1" data-key="pro_score_high"></div>
+    <div class="row"><label>pro_score_standard</label><input type="number" step="1" data-key="pro_score_standard"></div>
+    <div class="row"><label>pro_score_low</label><input type="number" step="1" data-key="pro_score_low"></div>
+    <div class="row"><label>pro_score_wait</label><input type="number" step="1" data-key="pro_score_wait"></div>
+
+    <p class="danger">⚠ 不变量：tau_lo &lt; tau_hi、small_fill_lo &lt; small_fill_hi、score_small ≤ score_full、base_bet ≤ max_bet、phase1 ≤ phase2。开启 PRO 模块前请确认已通读 README 第 13 节，PnL 方差会变。</p>
   </div>
 
   <div id="tab-snapshot" class="hide">
@@ -134,8 +174,12 @@
   </div>
 
   <div id="tab-report" class="hide">
-    <div class="row"><button class="g" onclick="loadReport()">刷新</button></div>
+    <div class="row">
+      <button class="g" onclick="loadReport()">刷新</button>
+      <button class="b" onclick="loadCalibration()">校准自检</button>
+    </div>
     <div id="report"></div>
+    <div id="calibration"></div>
   </div>
 
   <div id="tab-hands" class="hide">
@@ -333,6 +377,19 @@ function loadReport() {
     $("report").innerHTML = html;
     lg("报告已刷新");
   }).catch(function (e) { lg("报告失败 " + e.message); });
+}
+
+function loadCalibration() {
+  api("GET", "/ai/calibration").then(function (j) {
+    var c = j.calibration || {};
+    var html = '<div class="card"><h3 style="margin-top:0">概率校准自检</h3>' +
+      '<div class="stat"><span class="k">样本数</span><span class="v">' + (c.n || 0) + '</span></div>' +
+      '<div class="stat"><span class="k">Brier 分数</span><span class="v">' + (c.brier != null ? c.brier : "—") + '</span></div>' +
+      '<div class="stat"><span class="k">ECE 期望校准误差</span><span class="v">' + (c.ece != null ? c.ece : "—") + '</span></div>' +
+      '<div class="stat"><span class="k">总评</span><span class="v">' + (c.label || "—") + '</span></div></div>';
+    $("calibration").innerHTML = html;
+    lg("校准 " + (c.label || "—"));
+  }).catch(function (e) { lg("校准失败 " + e.message); });
 }
 
 function loadHands() {
